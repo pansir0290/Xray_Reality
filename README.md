@@ -18,3 +18,36 @@
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-lite.sh)
+
+## 🛠 功能支持
+
+| 功能 | 说明 |
+| :--- | :--- |
+| **协议** | VLESS + Reality + Vision |
+| **传输** | TCP |
+| **UUID** | 动态随机生成 (增强安全) |
+| **BBR** | 自动开启 (内核级加速) |
+| **证书** | 支持自签与 Caddy 自动签发 |
+
+---
+
+## 📝 常用操作
+
+* **查看节点信息**：安装完成后，信息会自动保存在 `~/_xray_url_`。
+    ```bash
+    cat ~/_xray_url_
+    ```
+* **重启服务**：
+    ```bash
+    systemctl restart xray
+    ```
+* **查看运行日志**：
+    ```bash
+    journalctl -u xray --no-pager -f
+    ```
+
+---
+
+## 🤝 鸣谢
+* [Xray-core](https://github.com/XTLS/Xray-core)
+* [pinkdog/xrayinstaller](https://gitea.com/pinkdog/xrayinstaller) (原始脚本作者)

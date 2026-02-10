@@ -18,7 +18,7 @@
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-lite.sh)
-
+```
 ## 🛠 功能支持
 
 | 功能 | 说明 |

@@ -448,143 +448,77 @@ fi
 UUID=$(uuidgen)
 
 args=("$@")
-# Generate guest accounts if needed
 if [[ ${#args[@]} -gt 0 ]]; then
 	guests=""
 	for arg in "${args[@]}"; do
 		if [[ ${#arg} -gt 20 ]]; then
-			echo "一些参数过长"
-			exit 1
+			echo "一些参数过长"; exit 1
 		fi
-
-		if [[ "$arg" == "@lock" ]]; then
-			continue
-		fi
-
+		[[ "$arg" == "@lock" ]] && continue
 		guest_uuid=$(xray uuid -i "${arg}")
 		guests+=", { \"id\": \"${guest_uuid}\", \"email\": \"${arg}\", \"flow\": \"xtls-rprx-vision\" }"
-		((i++))
 	done
 fi
 
-# Deriving public and private keys.
-# 修复：直接使用 xray 生成，不经过复杂的 sha256 转换，避免长度溢出
-tmp_key=$(/usr/local/bin/xray x25519)
-private_key=$(echo "$tmp_key" | grep "Private key" | awk '{print $3}')
-public_key=$(echo "$tmp_key" | grep "Public key" | awk '{print $3}')
-# 生成一个随机的 8 位 ShortID，别再让它空着了
-short_id=$(openssl rand -hex 4)
-
-
-# Xray config.json
-if [[ -f /usr/local/etc/xray/config.json ]]; then
-	mv /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.$TS.bak
-	warning002="Backup of previous config.json created at /usr/local/etc/xray/config.json.$TS.bak"
-fi
-
-
-# === 第一步：在这里直接生成所有核心参数 ===
-# 强制重新生成密钥对
+# === 1. 核心变量生成 (只保留这一处) ===
 tmp_keys=$(/usr/local/bin/xray x25519)
 private_key=$(echo "$tmp_keys" | grep -i "Private key" | awk '{print $3}')
-# 兼容旧版输出
 [[ -z "$private_key" ]] && private_key=$(echo "$tmp_keys" | awk -F': *' '/^PrivateKey:/ {print $2}')
 
 public_key=$(echo "$tmp_keys" | grep -i "Public key" | awk '{print $3}')
-# 兼容旧版输出
 [[ -z "$public_key" ]] && public_key=$(echo "$tmp_keys" | awk -F': *' '/^Password:/ {print $2}')
 
-# 生成 8 位 ShortID
 short_id=$(openssl rand -hex 4)
 
-# === 第二步：写入文件（这一段你脚本里有了，确保变量名对上） ===
+# === 2. 写入配置文件 ===
+if [[ -f /usr/local/etc/xray/config.json ]]; then
+	mv /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.$TS.bak
+fi
+
 cat >/usr/local/etc/xray/config.json <<-EOF
 {
-  ...
-  "realitySettings": {
-    "show": false,
-    "dest": "${DEST}",
-    "xver": 0,
-    "serverNames": ["${SNI}"],
-    "privateKey": "${private_key}",
-    "shortIds": ["${short_id}"]
+  "log": { "access": "none", "error": "/var/log/xray/error.log", "loglevel": "warning" },
+  "api": { "tag": "api", "services": ["StatsService"] },
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": ${PORT},
+      "protocol": "vless",
+      "settings": {
+        "clients": [
+          { "id": "${UUID}", "email": "admin@example.com", "flow": "xtls-rprx-vision" }${guests}
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "tcp",
+        "security": "reality",
+        "realitySettings": {
+          "show": false,
+          "dest": "${DEST}",
+          "xver": 0,
+          "serverNames": ["${SNI}"],
+          "privateKey": "${private_key}",
+          "shortIds": ["${short_id}"]
+        }
+      }
+    },
+    {
+      "listen": "127.0.0.1", "port": 10085, "protocol": "dokodemo-door",
+      "settings": { "address": "127.0.0.1" }, "tag": "api-in"
+    }
+  ],
+  ${OUTBOUND},
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [{ "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" }]
   }
-  ...
 }
 EOF
 
-# === 第三步：拼接 URL（直接用上面生成的变量，不用再抓取） ===
+# === 3. 拼接 URL (注意：请搜索脚本下方，删除所有其他的 vless_reality_url 赋值语句) ===
 vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
-
-cat >/usr/local/etc/xray/config.json <<-EOF
-	{
-	  "log": {
-	    "access": "none",
-	    "error": "/var/log/xray/error.log",
-	    "loglevel": "warning"
-	  },
-	  "stats": {},
-	  "policy": {
-	    "levels": {
-	      "0": {
-	        "statsUserUplink": true,
-	        "statsUserDownlink": true
-	      }
-	    },
-	    "system": {
-	      "statsInboundUplink": true,
-	      "statsInboundDownlink": true
-	    }
-	  },
-	  "api": {
-	    "tag": "api",
-	    "services": ["StatsService"]
-	  },
-	  "inbounds": [
-	    {
-	      "listen": "0.0.0.0",
-	      "port": ${PORT},
-	      "protocol": "vless",
-	      "settings": {
-	        "clients": [
-	          { "id": "${UUID}", "email": "admin@example.com", "flow": "xtls-rprx-vision" }${guests}
-	        ],
-	        "decryption": "none"
-	      },
-	      "streamSettings": {
-	        "network": "tcp",
-	        "security": "reality",
-	        "realitySettings": {
-	          "show": false,
-	          "dest": "${DEST}",
-	          "xver": 0,
-	      "serverNames": ["${SNI}"],
-          "privateKey": "${private_key}",
-          "shortIds": ["${short_id}"]
-
-	        }
-	      }
-	    },
-	    {
-	      "listen": "127.0.0.1",
-	      "port": 10085,
-	      "protocol": "dokodemo-door",
-	      "settings": {
-	        "address": "127.0.0.1"
-	      },
-	      "tag": "api-in"
-	    }
-	  ],
-	  ${OUTBOUND},
-	  "routing": {
-	    "domainStrategy": "AsIs",
-	    "rules": [
-	      { "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" }
-	    ]
-	  }
-	}
-EOF
 
 systemctl enable xray
 systemctl restart xray

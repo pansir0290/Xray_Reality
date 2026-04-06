@@ -469,10 +469,21 @@ priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
 # 显式指定路径执行，并捕获所有输出
 tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
 
-# 核心修复：不依赖特定的标签文字（如 PrivateKey:），直接抓取 Base64 特征
-# 第一个匹配到的是私钥，第二个匹配到的是公钥
+# 核心修复：抓取 Base64 特征
 private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p')
 public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p')
+
+# ---【就是这里！补上这一行，sid 就有了】---
+short_id=$(openssl rand -hex 4)
+# ---------------------------------------
+
+# 简单的防呆检查
+if [[ -z "$private_key" || -z "$public_key" ]]; then
+    echo "错误：无法从 Xray 提取密钥，原始输出如下："
+    echo "$tmp_key"
+    exit 1
+fi
+
 
 # 调试拦截：如果没抓到密钥，直接报错并打印 xray 的原始输出
 if [[ -z "$private_key" || -z "$public_key" ]]; then
@@ -535,7 +546,7 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	          "xver": 0,
 	          "serverNames": ["","${SNI}"],
 	          "privateKey": "${private_key}",
-	          "shortIds": [""]
+	          "shortIds": ["${short_id}"]
 	        }
 	      }
 	    },
@@ -623,7 +634,7 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}"
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_

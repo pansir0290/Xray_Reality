@@ -468,11 +468,13 @@ if [[ ${#args[@]} -gt 0 ]]; then
 fi
 
 # Deriving public and private keys.
-priv_hex=$(echo -n "$SEED" | sha256sum | cut -c1-64)
-priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
-tmp_key=$(xray x25519 -i "$priv_b64")
-private_key=$(echo "$tmp_key" | awk -F': *' '/^PrivateKey:/ {print $2}')
-public_key=$(echo "$tmp_key" | awk -F': *' '/^Password:/   {print $2}')
+# 修复：直接使用 xray 生成，不经过复杂的 sha256 转换，避免长度溢出
+tmp_key=$(/usr/local/bin/xray x25519)
+private_key=$(echo "$tmp_key" | grep "Private key" | awk '{print $3}')
+public_key=$(echo "$tmp_key" | grep "Public key" | awk '{print $3}')
+# 生成一个随机的 8 位 ShortID，别再让它空着了
+short_id=$(openssl rand -hex 4)
+
 
 # Xray config.json
 if [[ -f /usr/local/etc/xray/config.json ]]; then
@@ -522,9 +524,10 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	          "show": false,
 	          "dest": "${DEST}",
 	          "xver": 0,
-	          "serverNames": ["","${SNI}"],
-	          "privateKey": "${private_key}",
-	          "shortIds": [""]
+	      "serverNames": ["${SNI}"],
+          "privateKey": "${private_key}",
+          "shortIds": ["${short_id}"]
+
 	        }
 	      }
 	    },
@@ -612,7 +615,8 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}"
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
+
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
@@ -630,7 +634,8 @@ if [[ -n "$guests" ]]; then
 			continue
 		fi
 		guest_uuid=$(xray uuid -i "${arg}")
-		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+
 		echo "${guest_url}" >>~/_xray_url_
 		((i++))
 	done

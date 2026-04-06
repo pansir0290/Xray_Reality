@@ -482,6 +482,24 @@ if [[ -f /usr/local/etc/xray/config.json ]]; then
 	warning002="Backup of previous config.json created at /usr/local/etc/xray/config.json.$TS.bak"
 fi
 
+# --- 强制重新提取，确保不为空 ---
+# 1. 先从配置文件里把私钥抓出来
+current_priv=$(jq -r '.inbounds[0].streamSettings.realitySettings.privateKey' /usr/local/etc/xray/config.json)
+
+# 2. 根据私钥现场计算公钥
+current_keys=$(/usr/local/bin/xray x25519 -i "$current_priv")
+public_key=$(echo "$current_keys" | grep "Public key" | awk '{print $3}')
+# 如果上面那行不行，换成下面这行试试（兼容旧版）：
+[[ -z "$public_key" ]] && public_key=$(echo "$current_keys" | awk -F': *' '/^Password:/ {print $2}')
+
+# 3. 现场抓取 sid
+short_id=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' /usr/local/etc/xray/config.json)
+# --- 提取结束 ---
+
+# 现在的 URL 拼接（确保变量名一致）
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
+
+
 cat >/usr/local/etc/xray/config.json <<-EOF
 	{
 	  "log": {

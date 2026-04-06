@@ -482,21 +482,38 @@ if [[ -f /usr/local/etc/xray/config.json ]]; then
 	warning002="Backup of previous config.json created at /usr/local/etc/xray/config.json.$TS.bak"
 fi
 
-# --- 强制重新提取，确保不为空 ---
-# 1. 先从配置文件里把私钥抓出来
-current_priv=$(jq -r '.inbounds[0].streamSettings.realitySettings.privateKey' /usr/local/etc/xray/config.json)
 
-# 2. 根据私钥现场计算公钥
-current_keys=$(/usr/local/bin/xray x25519 -i "$current_priv")
-public_key=$(echo "$current_keys" | grep "Public key" | awk '{print $3}')
-# 如果上面那行不行，换成下面这行试试（兼容旧版）：
-[[ -z "$public_key" ]] && public_key=$(echo "$current_keys" | awk -F': *' '/^Password:/ {print $2}')
+# === 第一步：在这里直接生成所有核心参数 ===
+# 强制重新生成密钥对
+tmp_keys=$(/usr/local/bin/xray x25519)
+private_key=$(echo "$tmp_keys" | grep -i "Private key" | awk '{print $3}')
+# 兼容旧版输出
+[[ -z "$private_key" ]] && private_key=$(echo "$tmp_keys" | awk -F': *' '/^PrivateKey:/ {print $2}')
 
-# 3. 现场抓取 sid
-short_id=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' /usr/local/etc/xray/config.json)
-# --- 提取结束 ---
+public_key=$(echo "$tmp_keys" | grep -i "Public key" | awk '{print $3}')
+# 兼容旧版输出
+[[ -z "$public_key" ]] && public_key=$(echo "$tmp_keys" | awk -F': *' '/^Password:/ {print $2}')
 
-# 现在的 URL 拼接（确保变量名一致）
+# 生成 8 位 ShortID
+short_id=$(openssl rand -hex 4)
+
+# === 第二步：写入文件（这一段你脚本里有了，确保变量名对上） ===
+cat >/usr/local/etc/xray/config.json <<-EOF
+{
+  ...
+  "realitySettings": {
+    "show": false,
+    "dest": "${DEST}",
+    "xver": 0,
+    "serverNames": ["${SNI}"],
+    "privateKey": "${private_key}",
+    "shortIds": ["${short_id}"]
+  }
+  ...
+}
+EOF
+
+# === 第三步：拼接 URL（直接用上面生成的变量，不用再抓取） ===
 vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 

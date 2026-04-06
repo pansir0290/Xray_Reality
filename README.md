@@ -17,7 +17,7 @@
 在你的 **Debian** 或 **Ubuntu** 服务器上执行以下命令即可一键安装：
 
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-lite.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-pro.sh)
 ```
 ## 🛠 功能支持
 

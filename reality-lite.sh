@@ -387,32 +387,59 @@ warning000="Caddy listen on $DEST"
 
 # 安装基础组件和caddy
 if [[ $UPDATE -eq 1 ]]; then
-	if [[ -f /etc/caddy/Caddyfile ]]; then
-		mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
-		warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
-	fi
-	echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
+    if [[ -f /etc/caddy/Caddyfile ]]; then
+        mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
+        warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
+    fi
+    echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
 
-	apt-get update
-	apt-get install -y caddy unzip qrencode xxd jq uuid-runtime
+    apt-get update
+    # 确保安装了 wget
+    apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     apt-get clean
 
-	# Caddyfile
-	cat >/etc/caddy/Caddyfile <<-EOF
-		{
-		        skip_install_trust
-		        auto_https disable_redirects
-		        servers {
-		                protocols h1 h2
-		        }
-		}
+    # === 【新插入的内容：自动抓取博客网页】 ===
+    echo "正在下载伪装网页内容..."
+    mkdir -p /var/www/html
+    FAKE_SITE="https://www.34310889.xyz" 
+    
+    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
+    
+    cd /var/www/html
+    if [ ! -f index.html ]; then
+        first_html=$(ls *.html 2>/dev/null | head -n 1)
+        [ -n "$first_html" ] && mv "$first_html" index.html
+    fi
+    if [ ! -f index.html ]; then
+        echo "<html><head><title>Site Under Maintenance</title></head><body><h1>System Updating...</h1></body></html>" > index.html
+    fi
+    cd - > /dev/null
+    
+    chown -R caddy:caddy /var/www/html
+    # === 【插入结束】 ===
 
-		https://${SNI}:${CADDYPORT} {
-		    ${AUTOTLS}
-		    ${BINDLOCAL} 
-		    respond "" 200
-		}
-	EOF
+    # Caddyfile (只保留这一个 cat 块即可)
+    cat >/etc/caddy/Caddyfile <<-EOF
+        {
+                skip_install_trust
+                auto_https disable_redirects
+                servers {
+                        protocols h1 h2
+                }
+        }
+
+        https://${SNI}:${CADDYPORT} {
+            ${AUTOTLS}
+            ${BINDLOCAL} 
+            root * /var/www/html
+            file_server
+        }
+EOF
+
+    caddy fmt --overwrite /etc/caddy/Caddyfile
+    systemctl enable caddy
+    systemctl restart caddy
+fi
 	caddy fmt --overwrite /etc/caddy/Caddyfile
 	systemctl enable caddy
 	systemctl restart caddy
@@ -462,12 +489,39 @@ if [[ ${#args[@]} -gt 0 ]]; then
 	done
 fi
 
-# Deriving public and private keys.
+# Deriving public and private keys. (修正版)
 priv_hex=$(echo -n "$SEED" | sha256sum | cut -c1-64)
 priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
-tmp_key=$(xray x25519 -i "$priv_b64")
-private_key=$(echo "$tmp_key" | awk -F': *' '/^PrivateKey:/ {print $2}')
-public_key=$(echo "$tmp_key" | awk -F': *' '/^Password:/   {print $2}')
+
+# 显式指定路径执行，并捕获所有输出
+tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
+
+# 核心修复：抓取 Base64 特征
+private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p')
+public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p')
+
+# ---【就是这里！补上这一行，sid 就有了】---
+short_id=$(openssl rand -hex 4)
+# ---------------------------------------
+
+# 简单的防呆检查
+if [[ -z "$private_key" || -z "$public_key" ]]; then
+    echo "错误：无法从 Xray 提取密钥，原始输出如下："
+    echo "$tmp_key"
+    exit 1
+fi
+
+
+# 调试拦截：如果没抓到密钥，直接报错并打印 xray 的原始输出
+if [[ -z "$private_key" || -z "$public_key" ]]; then
+    echo "------------------------------------"
+    echo "致命错误：无法从 Xray 派生密钥！"
+    echo "Xray 原始输出内容如下："
+    echo "$tmp_key"
+    echo "------------------------------------"
+    exit 1
+fi
+
 
 # Xray config.json
 if [[ -f /usr/local/etc/xray/config.json ]]; then
@@ -519,7 +573,7 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	          "xver": 0,
 	          "serverNames": ["","${SNI}"],
 	          "privateKey": "${private_key}",
-	          "shortIds": [""]
+	          "shortIds": ["${short_id}"]
 	        }
 	      }
 	    },
@@ -607,7 +661,7 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}"
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_

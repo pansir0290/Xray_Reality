@@ -394,11 +394,10 @@ if [[ $UPDATE -eq 1 ]]; then
     echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
 
     apt-get update
-    # 确保安装了 wget
     apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     apt-get clean
 
-    # === 【新插入的内容：自动抓取博客网页】 ===
+    # === 自动化网页伪装 ===
     echo "正在下载伪装网页内容..."
     mkdir -p /var/www/html
     FAKE_SITE="https://www.34310889.xyz" 
@@ -416,33 +415,30 @@ if [[ $UPDATE -eq 1 ]]; then
     cd - > /dev/null
     
     chown -R caddy:caddy /var/www/html
-    # === 【插入结束】 ===
+    # === 抓取结束 ===
 
-    # Caddyfile (只保留这一个 cat 块即可)
-    cat >/etc/caddy/Caddyfile <<-EOF
-        {
-                skip_install_trust
-                auto_https disable_redirects
-                servers {
-                        protocols h1 h2
-                }
-        }
+    # 写入 Caddyfile
+    # 注意：EOF 必须顶格写
+    cat >/etc/caddy/Caddyfile <<EOF
+{
+    skip_install_trust
+    auto_https disable_redirects
+    servers {
+        protocols h1 h2
+    }
+}
 
-        https://${SNI}:${CADDYPORT} {
-            ${AUTOTLS}
-            ${BINDLOCAL} 
-            root * /var/www/html
-            file_server
-        }
+https://${SNI}:${CADDYPORT} {
+    ${AUTOTLS}
+    ${BINDLOCAL} 
+    root * /var/www/html
+    file_server
+}
 EOF
 
     caddy fmt --overwrite /etc/caddy/Caddyfile
     systemctl enable caddy
     systemctl restart caddy
-fi
-	caddy fmt --overwrite /etc/caddy/Caddyfile
-	systemctl enable caddy
-	systemctl restart caddy
 fi
 
 # 针对v6only的机器的出口选择

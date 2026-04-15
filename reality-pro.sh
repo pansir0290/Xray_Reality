@@ -387,35 +387,58 @@ warning000="Caddy listen on $DEST"
 
 # 安装基础组件和caddy
 if [[ $UPDATE -eq 1 ]]; then
-	if [[ -f /etc/caddy/Caddyfile ]]; then
-		mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
-		warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
-	fi
-	echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
+    if [[ -f /etc/caddy/Caddyfile ]]; then
+        mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
+        warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
+    fi
+    echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
 
-	apt-get update
-	apt-get install -y caddy unzip qrencode xxd jq uuid-runtime
+    apt-get update
+    apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     apt-get clean
 
-	# Caddyfile
-	cat >/etc/caddy/Caddyfile <<-EOF
-		{
-		        skip_install_trust
-		        auto_https disable_redirects
-		        servers {
-		                protocols h1 h2
-		        }
-		}
+    # === 自动化网页伪装 ===
+    echo "正在下载伪装网页内容..."
+    mkdir -p /var/www/html
+    FAKE_SITE="https://www.34310889.xyz" 
+    
+    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
+    
+    cd /var/www/html
+    if [ ! -f index.html ]; then
+        first_html=$(ls *.html 2>/dev/null | head -n 1)
+        [ -n "$first_html" ] && mv "$first_html" index.html
+    fi
+    if [ ! -f index.html ]; then
+        echo "<html><head><title>Site Under Maintenance</title></head><body><h1>System Updating...</h1></body></html>" > index.html
+    fi
+    cd - > /dev/null
+    
+    chown -R caddy:caddy /var/www/html
+    # === 抓取结束 ===
 
-		https://${SNI}:${CADDYPORT} {
-		    ${AUTOTLS}
-		    ${BINDLOCAL} 
-		    respond "" 200
-		}
-	EOF
-	caddy fmt --overwrite /etc/caddy/Caddyfile
-	systemctl enable caddy
-	systemctl restart caddy
+    # 写入 Caddyfile
+    # 注意：EOF 必须顶格写
+    cat >/etc/caddy/Caddyfile <<EOF
+{
+    skip_install_trust
+    auto_https disable_redirects
+    servers {
+        protocols h1 h2
+    }
+}
+
+https://${SNI}:${CADDYPORT} {
+    ${AUTOTLS}
+    ${BINDLOCAL} 
+    root * /var/www/html
+    file_server
+}
+EOF
+
+    caddy fmt --overwrite /etc/caddy/Caddyfile
+    systemctl enable caddy
+    systemctl restart caddy
 fi
 
 # 针对v6only的机器的出口选择

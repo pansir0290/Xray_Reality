@@ -400,7 +400,7 @@ if [[ $UPDATE -eq 1 ]]; then
     # === 自动化网页伪装 ===
     echo "正在下载伪装网页内容..."
     mkdir -p /var/www/html
-    FAKE_SITE="https://www.34310889.xyz" 
+    FAKE_SITE="https://netflix.34310889.xyz" 
     
     wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
     

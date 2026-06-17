@@ -1,5 +1,5 @@
 #!/bin/bash
-BASEURL="https://gitea.com/pinkdog/xrayinstaller/raw/branch/main/"
+#BASEURL="https://gitea.com/pinkdog/xrayinstaller/raw/branch/main/"
 export XRAYVER=""
 export DEBIAN_FRONTEND=noninteractive
 export DEBCONF_NONINTERACTIVE_SEEN=true

@@ -1,10 +1,10 @@
 #!/bin/bash
 #BASEURL="https://gitea.com/pinkdog/xrayinstaller/raw/branch/main/"
-export XRAYVER=""
-export DEBIAN_FRONTEND=noninteractive
-export DEBCONF_NONINTERACTIVE_SEEN=true
-export CI=1
-export AUTOMATION=1
+#export XRAYVER=""
+#export DEBIAN_FRONTEND=noninteractive
+#export DEBCONF_NONINTERACTIVE_SEEN=true
+#export CI=1
+#export AUTOMATION=1
 # Check OS
 if [[ ! -f /etc/debian_version ]]; then
 	echo "此脚本仅适用于 Debian/Ubuntu"

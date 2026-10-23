@@ -499,23 +499,20 @@ priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
 # 显式指定路径执行，并捕获所有输出
 tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
 
-# 核心修复：抓取 Base64 特征
-private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p')
-public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p')
+# 核心修复：精准提取并强制删除不可见的换行/回车符，防止URL断裂
+private_key=$(echo "$tmp_key" | grep -i 'Private key:' | awk '{print $3}' | tr -d '\r\n ' | tr -d '\0')
+public_key=$(echo "$tmp_key" | grep -i 'Public key:' | awk '{print $3}' | tr -d '\r\n ' | tr -d '\0')
 
-# ---【就是这里！补上这一行，sid 就有了】---
-short_id=$(openssl rand -hex 4)
-# ---------------------------------------
-
-# 简单的防呆检查
-if [[ -z "$private_key" || -z "$public_key" ]]; then
-    echo "错误：无法从 Xray 提取密钥，原始输出如下："
-    echo "$tmp_key"
-    exit 1
+# 兼容性回退：应对极端老版本或正则解析问题
+if [[ -z "$private_key" ]]; then
+    private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p' | tr -d '\r\n ')
+    public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p' | tr -d '\r\n ')
 fi
 
+# 生成 sid
+short_id=$(openssl rand -hex 4)
 
-# 调试拦截：如果没抓到密钥，直接报错并打印 xray 的原始输出
+# 简单的防呆检查
 if [[ -z "$private_key" || -z "$public_key" ]]; then
     echo "------------------------------------"
     echo "致命错误：无法从 Xray 派生密钥！"
@@ -524,7 +521,6 @@ if [[ -z "$private_key" || -z "$public_key" ]]; then
     echo "------------------------------------"
     exit 1
 fi
-
 
 # Xray config.json
 if [[ -f /usr/local/etc/xray/config.json ]]; then
@@ -664,7 +660,8 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
+# 核心修复：显式补齐 encryption=none, headerType=none, alpn=h2,http/1.1
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?encryption=none&flow=xtls-rprx-vision&type=tcp&headerType=none&security=reality&sni=${SNI}&alpn=h2,http/1.1&fp=firefox&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
@@ -682,7 +679,8 @@ if [[ -n "$guests" ]]; then
 			continue
 		fi
 		guest_uuid=$(xray uuid -i "${arg}")
-		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+        # Guest 同理补齐参数
+		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?encryption=none&flow=xtls-rprx-vision&type=tcp&headerType=none&security=reality&sni=${SNI}&alpn=h2,http/1.1&fp=firefox&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
 		echo "${guest_url}" >>~/_xray_url_
 		((i++))
 	done

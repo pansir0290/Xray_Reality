@@ -30,7 +30,6 @@ has_ipv6_github() {
 }
 
 add_github_ipv6_hosts() {
-	# 添加 GitHub IPv6 访问
 	sed -i '/^# ==== GitHub IPv6 fallback ====$/,/^# ==== End GitHub IPv6 fallback ====$/d' /etc/hosts
 	if has_ipv6_github; then
 		return
@@ -200,7 +199,6 @@ show_sni_status() {
 	echo "------"
 }
 
-# 核心修复 1：Caddy 证书配置全面注入 curves x25519 限制后量子握手
 handle_sni_setup() {
 	local first_run=true
 	local proposed_sni=""
@@ -346,7 +344,6 @@ HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
-# 适配了修改后的 AUTOTLS 字符串匹配规则
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
 elif [[ "$AUTOTLS" == *"tls internal"* ]]; then
@@ -413,14 +410,12 @@ EOF
 
     caddy fmt --overwrite /etc/caddy/Caddyfile
     
-    # 核心修复 2：系统底层暴力阉割 Go 1.23 后量子加密特性
     mkdir -p /etc/systemd/system/caddy.service.d
     cat > /etc/systemd/system/caddy.service.d/override.conf << EOF
 [Service]
 Environment="GODEBUG=tlsmlkem=0,tlskyber=0"
 EOF
     systemctl daemon-reload
-
     systemctl enable caddy
     systemctl restart caddy
 fi
@@ -442,6 +437,14 @@ fi
 
 if [[ $UPDATE -eq 1 ]]; then
 	bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata $XRAYVER
+    
+    # 终极修复：暴力阉割 Xray 自身的后量子加密特性，防止握手雪崩
+    mkdir -p /etc/systemd/system/xray.service.d
+    cat > /etc/systemd/system/xray.service.d/override.conf << EOF
+[Service]
+Environment="GODEBUG=tlsmlkem=0,tlskyber=0"
+EOF
+    systemctl daemon-reload
 fi
 
 UUID=$(uuidgen)
@@ -454,22 +457,17 @@ if [[ ${#args[@]} -gt 0 ]]; then
 			echo "一些参数过长"
 			exit 1
 		fi
-
 		if [[ "$arg" == "@lock" ]]; then
 			continue
 		fi
-
 		guest_uuid=$(xray uuid -i "${arg}")
 		guests+=", { \"id\": \"${guest_uuid}\", \"email\": \"${arg}\", \"flow\": \"xtls-rprx-vision\" }"
 		((i++))
 	done
 fi
 
-priv_hex=$(echo -n "$SEED" | sha256sum | cut -c1-64)
-priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
-
-tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
-
+# 终极修复：彻底抛弃 xxd/base64，使用原生命令随机生成，杜绝填充符报错
+tmp_key=$(/usr/local/bin/xray x25519 2>&1)
 private_key=$(echo "$tmp_key" | grep -i 'Private key:' | awk '{print $3}' | tr -d '\r\n ' | tr -d '\0')
 public_key=$(echo "$tmp_key" | grep -i 'Public key:' | awk '{print $3}' | tr -d '\r\n ' | tr -d '\0')
 
@@ -535,7 +533,7 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	          "show": false,
 	          "dest": "${DEST}",
 	          "xver": 0,
-	          "serverNames": ["","${SNI}"],
+	          "serverNames": ["${SNI}"],
 	          "privateKey": "${private_key}",
 	          "shortIds": ["${short_id}"]
 	        }
@@ -618,7 +616,8 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?encryption=none&flow=xtls-rprx-vision&type=tcp&headerType=none&security=reality&sni=${SNI}&alpn=h2,http/1.1&fp=firefox&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
+# 核心还原：恢复为干净的标准官方格式，去除多余累赘参数
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
@@ -635,7 +634,8 @@ if [[ -n "$guests" ]]; then
 			continue
 		fi
 		guest_uuid=$(xray uuid -i "${arg}")
-		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?encryption=none&flow=xtls-rprx-vision&type=tcp&headerType=none&security=reality&sni=${SNI}&alpn=h2,http/1.1&fp=firefox&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+		# Guest 同理还原标准格式
+		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
 		echo "${guest_url}" >>~/_xray_url_
 		((i++))
 	done

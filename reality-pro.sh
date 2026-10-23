@@ -30,6 +30,7 @@ has_ipv6_github() {
 }
 
 add_github_ipv6_hosts() {
+	# 添加 GitHub IPv6 访问
 	sed -i '/^# ==== GitHub IPv6 fallback ====$/,/^# ==== End GitHub IPv6 fallback ====$/d' /etc/hosts
 	if has_ipv6_github; then
 		return
@@ -48,6 +49,7 @@ add_github_ipv6_hosts() {
 	echo "setting GitHub IPv6 hosts"
 	cat <<EOF >>/etc/hosts
 # ==== GitHub IPv6 fallback ====
+# ref: https://danwin1210.de/github-ipv6-proxy.php
 2a01:4f8:c010:d56::2 github.com
 2a01:4f8:c010:d56::3 api.github.com
 2a01:4f8:c010:d56::4 codeload.github.com
@@ -61,6 +63,7 @@ EOF
 }
 
 get_warp_outbound_config() {
+	# 生成WARP出口配置
 	local CONFIG_FILE="./warp-config.json"
 	if [[ -f "$CONFIG_FILE" ]]; then
 		local WARP_JSON=$(cat "$CONFIG_FILE")
@@ -113,6 +116,7 @@ EOF
 	echo "$OUTBOUND_CONFIG"
 }
 
+# 获取基本网络信息
 TRACE4=$(curl -4 -s https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE6=$(curl -6 -s https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE="${TRACE4:-$TRACE6}"
@@ -129,20 +133,26 @@ if [[ "$WARP6" == "off" ]]; then
 fi
 TS=$(echo "$TRACE" | grep '^ts=' | cut -d= -f2 | cut -d. -f1)
 
+###### SNI屎区开始
+# 检查IPv4是否在本机网卡上
 check_ipv4_on_interface() {
 	local ip="$1"
 	[[ -z "$ip" ]] && return 1
 	ip a | grep -q "inet ${ip}/"
 	return $?
 }
-
+# 颜色定义
 GREEN='\033[0;32m'
 ORANGE='\033[0;33m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
+# 域名格式验证函数
 is_valid_domain() {
 	local domain="$1"
+
+	# 确保域名以字母结尾
 	[[ ! "$domain" =~ [a-zA-Z]$ ]] && return 1
+
 	IFS='.' read -ra parts <<<"$domain"
 	[[ ${#parts[@]} -lt 2 ]] && return 1
 	for part in "${parts[@]}"; do
@@ -155,8 +165,11 @@ is_valid_domain() {
 	return 0
 }
 
+# DNS解析验证函数
 check_dns_match() {
 	local domain="$1"
+
+	# 获取完整JSON响应
 	local response_a=$(curl -s "https://dns.google/resolve?name=${domain}&type=A")
 	local response_aaaa=$(curl -s "https://dns.google/resolve?name=${domain}&type=AAAA")
 
@@ -171,6 +184,7 @@ check_dns_match() {
 	return 1
 }
 
+# 生成随机域名
 generate_random_domain() {
 	local default_sni=""
 	response=$(curl -s --max-time 5 -w "\n%{http_code}" "https://random-word-api.vercel.app/api?words=2" 2>/dev/null)
@@ -190,15 +204,18 @@ generate_random_domain() {
 	echo "$default_sni"
 }
 
+# 显示SNI状态
 show_sni_status() {
 	local sni="$1"
 	local cert_type="$2"
 	local color="$3"
+
 	echo "使用：${sni}"
 	echo -e "签名：${color}${cert_type}${NC}"
 	echo "------"
 }
 
+# 处理SNI设置的主逻辑
 handle_sni_setup() {
 	local first_run=true
 	local proposed_sni=""
@@ -207,10 +224,12 @@ handle_sni_setup() {
 	local autotls_value=""
 
 	while true; do
+		# 首次运行时尝试自动生成
 		if [[ "$first_run" == true ]]; then
 			first_run=false
 			echo "未设置SNI，自动生成SNI中"
 
+			# 尝试使用IP方案
 			if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 				proposed_sni="$IPV4"
 				cert_type="自动"
@@ -219,22 +238,23 @@ handle_sni_setup() {
     issuer acme {
       profile shortlived
     }
-    curves x25519
   }"
 			else
+				# 回落到随机域名
 				proposed_sni=$(generate_random_domain)
 				cert_type="自签"
 				color="$ORANGE"
-				autotls_value="tls internal {
-    curves x25519
-  }"
+				autotls_value="tls internal"
 			fi
+
 			show_sni_status "$proposed_sni" "$cert_type" "$color"
 		fi
 
+		# 获取用户输入
 		read -rp "回车确认或输入其他SNI: " user_input
 		user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]')
 
+		# 用户直接回车，使用建议值
 		if [[ -z "$user_input" ]]; then
 			SNI="$proposed_sni"
 			AUTOTLS="$autotls_value"
@@ -244,80 +264,88 @@ handle_sni_setup() {
 			break
 		fi
 
+		# 用户输入了新SNI，验证格式
 		if ! is_valid_domain "$user_input"; then
 			echo "SNI不合法，请重新抉择"
 			echo "已设置回 $proposed_sni"
 			continue
 		fi
 
+		# 格式合法，检查DNS并更新proposed_sni
 		proposed_sni="$user_input"
 		if check_dns_match "$proposed_sni"; then
 			cert_type="自动"
 			color="$GREEN"
-			autotls_value="tls {
-    curves x25519
-  }"
+			autotls_value=""
 		else
 			cert_type="自签"
 			color="$ORANGE"
-			autotls_value="tls internal {
-    curves x25519
-  }"
+			autotls_value="tls internal"
 		fi
 		show_sni_status "$proposed_sni" "$cert_type" "$color"
 	done
 }
 
+# 主流程
 if [[ -z "$SNI" ]]; then
+	# 用户未设置SNI，进入交互流程
 	handle_sni_setup
 else
+	# 用户已设置SNI
 	SNI=$(echo "$SNI" | tr '[:upper:]' '[:lower:]')
 	if [[ "$SNI" == "rawip" ]]; then
+		# 特殊关键字rawip
 		if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 			SNI="$IPV4"
 			AUTOTLS="tls {
     issuer acme {
       profile shortlived
     }
-    curves x25519
   }"
 		else
+			# 回落到交互设置
 			echo "SNI不合理，请重新设置"
 			unset SNI
 			handle_sni_setup
 		fi
 	else
+		# 用户设置了具体的SNI值
 		if ! is_valid_domain "$SNI"; then
+			# 格式不合法，回落到交互设置
 			echo "SNI不合理，请重新设置"
 			unset SNI
 			handle_sni_setup
 		else
+			# 格式合法，检查DNS
 				if check_dns_match "$SNI"; then
-					AUTOTLS="tls {
-    curves x25519
-  }"
+					# DNS匹配成功，自动证书
+					AUTOTLS=""
 					[[ -z "$HOST" ]] && HOST="$SNI"
 				else
-					AUTOTLS="tls internal {
-    curves x25519
-  }"
+					# DNS不匹配，自签证书
+					AUTOTLS="tls internal"
 				fi
 		fi
 	fi
 fi
+###### SNI屎区结束
 
+# 当检测到warp时且HOST未设置时，询问用户HOST值
 if [[ "$WARP4" != "off" && "$WARP6" != "off" && -z "$HOST" ]]; then
 	echo "无法获取本机IP地址，请手动输入HOST用于生成节点链接"
 	read -rp "DDNS域名或者IP: " HOST
+	# 如果HOST是IPv6地址，确保加上中括号
 	if [[ "$HOST" == *:* && "$HOST" != *\]* ]]; then
 		HOST="[$HOST]"
 	fi
 fi
 
+# 当没有IPv4时，引导用户选择是否使用WARP出站。
 if [[ $V6ONLY -eq 1 ]]; then
 	read -rp "IPv6 only的机器，尝试使用Cloudflare WARP出口流量? (Y/n): " warp_choice
 fi
 
+# 配置outbound
 OUTBOUND=$(
 	cat <<EOF
 "outbounds": [
@@ -344,9 +372,10 @@ HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
+# 如果AUTOTLS包含关键词shortlived
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
-elif [[ "$AUTOTLS" == *"tls internal"* ]]; then
+elif [[ "$AUTOTLS" == "tls internal" ]]; then
 	CADDYPORT=444
 	BINDLOCAL="bind 127.0.0.1 [::1]"
 	DEST="127.0.0.1:$CADDYPORT"
@@ -356,23 +385,19 @@ fi
 
 warning000="Caddy listen on $DEST"
 
+# 安装基础组件和caddy
 if [[ $UPDATE -eq 1 ]]; then
     if [[ -f /etc/caddy/Caddyfile ]]; then
         mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
         warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
     fi
-    
-    apt-get update
-    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg coreutils
+    echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
 
-    rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-    echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
-    
     apt-get update
     apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     apt-get clean
 
+    # === 自动化网页伪装 ===
     echo "正在下载伪装网页内容..."
     mkdir -p /var/www/html
     FAKE_SITE="https://netflix.34310889.xyz" 
@@ -390,7 +415,10 @@ if [[ $UPDATE -eq 1 ]]; then
     cd - > /dev/null
     
     chown -R caddy:caddy /var/www/html
+    # === 抓取结束 ===
 
+    # 写入 Caddyfile
+    # 注意：EOF 必须顶格写
     cat >/etc/caddy/Caddyfile <<EOF
 {
     skip_install_trust
@@ -409,17 +437,11 @@ https://${SNI}:${CADDYPORT} {
 EOF
 
     caddy fmt --overwrite /etc/caddy/Caddyfile
-    
-    mkdir -p /etc/systemd/system/caddy.service.d
-    cat > /etc/systemd/system/caddy.service.d/override.conf << EOF
-[Service]
-Environment="GODEBUG=tlsmlkem=0,tlskyber=0"
-EOF
-    systemctl daemon-reload
     systemctl enable caddy
     systemctl restart caddy
 fi
 
+# 针对v6only的机器的出口选择
 if [[ $V6ONLY -eq 1 ]]; then
 	add_github_ipv6_hosts
 	if [[ "${warp_choice}" == "N" ]] || [[ "${warp_choice}" == "n" ]]; then
@@ -432,24 +454,19 @@ if [[ $V6ONLY -eq 1 ]]; then
 		fi
 	fi
 elif [[ "$WARP4" != "off" ]]; then
+	# 若本机侦测到有WARP4则优先使用v6出口减少使用公共v4
 	OUTBOUND=$OUTBOUNDV6
 fi
 
+# Install Xray
 if [[ $UPDATE -eq 1 ]]; then
 	bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata $XRAYVER
-    
-    # 终极修复：暴力阉割 Xray 自身的后量子加密特性，防止握手雪崩
-    mkdir -p /etc/systemd/system/xray.service.d
-    cat > /etc/systemd/system/xray.service.d/override.conf << EOF
-[Service]
-Environment="GODEBUG=tlsmlkem=0,tlskyber=0"
-EOF
-    systemctl daemon-reload
 fi
 
 UUID=$(uuidgen)
 
 args=("$@")
+# Generate guest accounts if needed
 if [[ ${#args[@]} -gt 0 ]]; then
 	guests=""
 	for arg in "${args[@]}"; do
@@ -457,35 +474,52 @@ if [[ ${#args[@]} -gt 0 ]]; then
 			echo "一些参数过长"
 			exit 1
 		fi
+
 		if [[ "$arg" == "@lock" ]]; then
 			continue
 		fi
+
 		guest_uuid=$(xray uuid -i "${arg}")
 		guests+=", { \"id\": \"${guest_uuid}\", \"email\": \"${arg}\", \"flow\": \"xtls-rprx-vision\" }"
 		((i++))
 	done
 fi
 
-# 终极修复：彻底抛弃 xxd/base64，使用原生命令随机生成，杜绝填充符报错
-tmp_key=$(/usr/local/bin/xray x25519 2>&1)
-private_key=$(echo "$tmp_key" | grep -i 'Private key:' | awk '{print $3}' | tr -d '\r\n ' | tr -d '\0')
-public_key=$(echo "$tmp_key" | grep -i 'Public key:' | awk '{print $3}' | tr -d '\r\n ' | tr -d '\0')
+# Deriving public and private keys. (修正版)
+priv_hex=$(echo -n "$SEED" | sha256sum | cut -c1-64)
+priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
 
-if [[ -z "$private_key" ]]; then
-    private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p' | tr -d '\r\n ')
-    public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p' | tr -d '\r\n ')
+# 显式指定路径执行，并捕获所有输出
+tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
+
+# 核心修复：抓取 Base64 特征
+private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p')
+public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p')
+
+# ---【就是这里！补上这一行，sid 就有了】---
+short_id=$(openssl rand -hex 4)
+# ---------------------------------------
+
+# 简单的防呆检查
+if [[ -z "$private_key" || -z "$public_key" ]]; then
+    echo "错误：无法从 Xray 提取密钥，原始输出如下："
+    echo "$tmp_key"
+    exit 1
 fi
 
-short_id=$(openssl rand -hex 4)
 
+# 调试拦截：如果没抓到密钥，直接报错并打印 xray 的原始输出
 if [[ -z "$private_key" || -z "$public_key" ]]; then
     echo "------------------------------------"
     echo "致命错误：无法从 Xray 派生密钥！"
+    echo "Xray 原始输出内容如下："
     echo "$tmp_key"
     echo "------------------------------------"
     exit 1
 fi
 
+
+# Xray config.json
 if [[ -f /usr/local/etc/xray/config.json ]]; then
 	mv /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.$TS.bak
 	warning002="Backup of previous config.json created at /usr/local/etc/xray/config.json.$TS.bak"
@@ -533,7 +567,7 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	          "show": false,
 	          "dest": "${DEST}",
 	          "xver": 0,
-	          "serverNames": ["${SNI}"],
+	          "serverNames": ["","${SNI}"],
 	          "privateKey": "${private_key}",
 	          "shortIds": ["${short_id}"]
 	        }
@@ -562,10 +596,12 @@ EOF
 systemctl enable xray
 systemctl restart xray
 
+# Network optimize
 if [[ $UPDATE -eq 1 ]]; then
 touch /etc/sysctl.conf
 sed -i '/^### proxy optimization start ###$/,/^### proxy optimization end ###$/d' /etc/sysctl.conf
 tee -a /etc/sysctl.conf >/dev/null <<'EOF'
+
 ### proxy optimization start ###
 kernel.panic = 1
 vm.panic_on_oom = 1
@@ -588,17 +624,22 @@ EOF
 sysctl -p
 fi
 
+# 调试信息
 systemctl status xray --no-pager -l
 systemctl status caddy --no-pager -l
 
+# 清理 GitHub IPv6 临时设置
 sed -i '/^# ==== GitHub IPv6 fallback ====$/,/^# ==== End GitHub IPv6 fallback ====$/d' /etc/hosts
 
+# 获取代理位置
 json=$(curl -s -L --retry 1 https://ipapi.co/json/)
 CITY=$(echo "$json" | grep -oP '"city"\s*:\s*"\K[^"]+' | sed 's/[^a-zA-Z0-9]//g')
 ASN=$(echo "$json" | grep -oP '"asn"\s*:\s*"AS\K\d+')
 COUNTRYCODE=$(echo "$TRACE" | grep '^loc=' | cut -d= -f2)
 
+# 生成 VLESS Reality URL
 insert="SEED=$SEED"
+# 如果AUTOTLS包含关键词shortlived
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	insert+=" SNI=rawip"
 else
@@ -616,7 +657,6 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-# 核心还原：恢复为干净的标准官方格式，去除多余累赘参数
 vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
@@ -624,6 +664,7 @@ echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
 echo $vless_reality_url >>~/_xray_url_
 echo >>~/_xray_url_
 echo "以上节点信息保存在 ~/_xray_url_ 文件中, 以后使用 cat _xray_url_ 查看" >>~/_xray_url_
+#对于Guest用户，输出一对一的url信息
 if [[ -n "$guests" ]]; then
 	echo "" >>~/_xray_url_
 	echo "Guest 用户信息 ----------" >>~/_xray_url_
@@ -634,8 +675,7 @@ if [[ -n "$guests" ]]; then
 			continue
 		fi
 		guest_uuid=$(xray uuid -i "${arg}")
-		# Guest 同理还原标准格式
-		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
 		echo "${guest_url}" >>~/_xray_url_
 		((i++))
 	done

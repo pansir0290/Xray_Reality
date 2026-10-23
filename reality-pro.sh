@@ -391,8 +391,15 @@ if [[ $UPDATE -eq 1 ]]; then
         mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
         warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
     fi
-    echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
+    
+    apt-get update
+    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl gnupg coreutils
 
+    # 清理旧的 GPG 密钥文件（如果存在），防止交互式询问阻塞脚本
+    rm -f /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
+    
     apt-get update
     apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     apt-get clean

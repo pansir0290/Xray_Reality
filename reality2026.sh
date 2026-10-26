@@ -15,7 +15,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 echo -e "${CYAN}======================================================${NC}"
-echo -e "${CYAN}       Xray VLESS-Reality 全能自适应部署脚本 (重构版)    ${NC}"
+echo -e "${CYAN}       Xray VLESS-Reality 全能自适应部署脚本 (修正版)    ${NC}"
 echo -e "${CYAN}======================================================${NC}"
 
 # ==========================================
@@ -72,14 +72,23 @@ read -rp "请输入 Caddy 回落端口 [默认: 8443]: " CADDY_PORT
 CADDY_PORT=${CADDY_PORT:-8443}
 
 # ==========================================
-# 第三部分：生成现代级密钥与凭证
+# 第三部分：安装 Xray 并生成现代级密钥
 # ==========================================
-echo -e "\n${GREEN}[3/6] 生成 Xray 核心安全凭证...${NC}"
+echo -e "\n${GREEN}[3/6] 安装 Xray 核心并生成安全凭证...${NC}"
+
+# 修复处：确保 Xray 已经被下载并安装
+if command -v systemctl >/dev/null 2>&1; then
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
+else
+    # 针对没有 systemd 的 Alpine 系统的独立安装逻辑
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
+fi
+
 UUID=$(uuidgen)
 SHORT_ID=$(openssl rand -hex 4)
-# 抛弃旧版 xxd 依赖，直接用 openssl 派生最干净的 base64 私钥
+# 利用 openssl 派生最干净的 base64 私钥
 RAW_KEY=$(openssl rand -base64 32)
-# 利用 xray 官方命令提取并格式化
+# 利用刚安装好的 xray 官方命令提取并格式化
 KEY_PAIR=$(/usr/local/bin/xray x25519 -i "${RAW_KEY}" 2>/dev/null || xray x25519 -i "${RAW_KEY}")
 PRIVATE_KEY=$(echo "$KEY_PAIR" | grep -oP 'Private key: \K.*' | tr -d '\r\n')
 PUBLIC_KEY=$(echo "$KEY_PAIR" | grep -oP 'Public key: \K.*' | tr -d '\r\n')

@@ -184,7 +184,7 @@ show_sni_status() {
 }
 
 # ==========================================
-# [3] 原汁原味的自动公网证书逻辑
+# [3] 原汁原味的自动公网证书逻辑 (偷天换日)
 # ==========================================
 handle_sni_setup() {
 	local first_run=true
@@ -297,7 +297,8 @@ HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
-# 完美还原：剔除引发阿里云报错的 [::1]，保留原有的强判定
+# 【核心修复点】：无论是否申请真实证书，只要是通过 Xray 本地代理，全部锁死 bind 127.0.0.1！
+# 这彻底根治了阿里云等内核禁用 IPv6 的机器上 Caddy 尝试绑定 [::] 导致崩溃的恶性 Bug。
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
     BINDLOCAL=""
@@ -306,22 +307,25 @@ elif [[ "$AUTOTLS" == "tls internal" ]]; then
 	BINDLOCAL="bind 127.0.0.1" 
 	DEST="127.0.0.1:$CADDYPORT"
 else
-    BINDLOCAL=""
+    BINDLOCAL="bind 127.0.0.1"
 	DEST="127.0.0.1:$CADDYPORT"
 fi
 
 warning000="Caddy listen on $DEST"
 
 # ==========================================
-# [4] GPG 修复、Caddy 防崩溃与网页拖站
+# [4] GPG 彻底修复、Caddy 安装与网页完美伪装
 # ==========================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ "$PKG_MGR" == "apt" ]]; then
-        # 彻底修复 Debian 13 源拉取报 NO_PUBKEY 的问题
-        apt-get update -y && apt-get install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+        # 彻底修复 Debian 13 源拉取报 NO_PUBKEY 的致命问题
+        rm -f /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -y || true
+        apt-get install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg --yes 2>/dev/null
         echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
-        apt-get update -y && apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
+        apt-get update -y
+        apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     elif [[ "$PKG_MGR" == "apk" ]]; then
         apk add caddy unzip libqrencode-tools xxd jq util-linux wget
     elif [[ "$PKG_MGR" == "yum" ]]; then
@@ -329,8 +333,8 @@ if [[ $UPDATE -eq 1 ]]; then
         yum install -y caddy unzip qrencode vim-common jq util-linux wget
     fi
 
-    # 还原并补回被隐藏的网页下载过程展示
-    echo "正在下载伪装网页内容..."
+    # 还原：你原版设计的网页自动扒取与存放逻辑
+    echo -e "\n正在下载伪装网页内容 (Netflix 模板)..."
     mkdir -p /var/www/html
     FAKE_SITE="https://netflix.34310889.xyz"
     wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
@@ -340,16 +344,17 @@ if [[ $UPDATE -eq 1 ]]; then
     cd - > /dev/null
     chown -R caddy:caddy /var/www/html 2>/dev/null || true
 
-    # 注入 http_port/https_port，彻底根治 Caddy 与 Xray 抢占 443 导致的进程崩溃
+    # 使用你原本一模一样的 Caddyfile 排版格式
     mkdir -p /etc/caddy
     cat >/etc/caddy/Caddyfile <<EOF
 {
     skip_install_trust
     auto_https disable_redirects
-    http_port 10080
-    https_port 10443
-    servers { protocols h1 h2 }
+    servers {
+        protocols h1 h2
+    }
 }
+
 https://${SNI}:${CADDYPORT} {
     ${AUTOTLS}
     ${BINDLOCAL} 
@@ -358,9 +363,16 @@ https://${SNI}:${CADDYPORT} {
 }
 EOF
     
+    # 增加 caddy fmt 校验并加入了错误自排查输出
     if command -v systemctl >/dev/null; then
+        caddy fmt --overwrite /etc/caddy/Caddyfile
         systemctl daemon-reload
-        systemctl enable caddy && systemctl restart caddy
+        systemctl enable caddy
+        systemctl restart caddy || {
+            echo -e "\n${ORANGE}Caddy 启动失败！为你抓取了报错日志：${NC}"
+            journalctl -xeu caddy.service --no-pager | tail -n 15
+            exit 1
+        }
     else
         rc-update add caddy default && rc-service caddy restart
     fi

@@ -7,7 +7,7 @@ export CI=1
 export AUTOMATION=1
 
 # ==========================================
-# [1] 跨系统包管理器支持
+# [1] 环境预检与跨系统支持
 # ==========================================
 if [[ $EUID -ne 0 ]]; then
 	echo "此脚本仅限 root 用户运行"
@@ -53,6 +53,7 @@ add_github_ipv6_hosts() {
 		fi
 	fi
 
+	echo "setting GitHub IPv6 hosts"
 	cat <<EOF >>/etc/hosts
 # ==== GitHub IPv6 fallback ====
 2a01:4f8:c010:d56::2 github.com
@@ -113,6 +114,9 @@ EOF
 	echo "$OUTBOUND_CONFIG"
 }
 
+# ==========================================
+# [2] 网络侦测与基础环境收集
+# ==========================================
 TRACE4=$(curl -4 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE6=$(curl -6 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE="${TRACE4:-$TRACE6}"
@@ -180,7 +184,7 @@ show_sni_status() {
 }
 
 # ==========================================
-# [3] 核心伪装逻辑完全还原 (偷自己)
+# [3] 原汁原味的自动公网证书逻辑
 # ==========================================
 handle_sni_setup() {
 	local first_run=true
@@ -224,7 +228,7 @@ handle_sni_setup() {
 		fi
 
 		proposed_sni="$user_input"
-        # 还原原版灵魂：域名匹配成功就去申请真实证书
+		# 完美还原：域名验证匹配，则开启真实证书申请
 		if check_dns_match "$proposed_sni"; then
 			cert_type="自动"
 			color="$GREEN"
@@ -255,7 +259,6 @@ else
 			unset SNI
 			handle_sni_setup
 		else
-            # 完全还原原版逻辑
 			if check_dns_match "$SNI"; then
 				AUTOTLS=""
 				[[ -z "$HOST" ]] && HOST="$SNI"
@@ -289,30 +292,36 @@ OUTBOUNDV6=$(cat <<EOF
 EOF
 )
 
+# 动态计算 Caddy 回落端口
 HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
-# 【绝对修复点】：删除了 [::1]，彻底根治阿里云无 IPv6 导致的崩溃
+# 完美还原：剔除引发阿里云报错的 [::1]，保留原有的强判定
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
+    BINDLOCAL=""
 elif [[ "$AUTOTLS" == "tls internal" ]]; then
 	CADDYPORT=444
 	BINDLOCAL="bind 127.0.0.1" 
 	DEST="127.0.0.1:$CADDYPORT"
 else
+    BINDLOCAL=""
 	DEST="127.0.0.1:$CADDYPORT"
 fi
 
 warning000="Caddy listen on $DEST"
 
 # ==========================================
-# [4] 基础组件安装与 Caddy 伪装站拉取
+# [4] GPG 修复、Caddy 防崩溃与网页拖站
 # ==========================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ "$PKG_MGR" == "apt" ]]; then
-        echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
-        apt-get update && apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
+        # 彻底修复 Debian 13 源拉取报 NO_PUBKEY 的问题
+        apt-get update -y && apt-get install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
+        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg 2>/dev/null
+        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
+        apt-get update -y && apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
     elif [[ "$PKG_MGR" == "apk" ]]; then
         apk add caddy unzip libqrencode-tools xxd jq util-linux wget
     elif [[ "$PKG_MGR" == "yum" ]]; then
@@ -320,18 +329,25 @@ if [[ $UPDATE -eq 1 ]]; then
         yum install -y caddy unzip qrencode vim-common jq util-linux wget
     fi
 
+    # 还原并补回被隐藏的网页下载过程展示
+    echo "正在下载伪装网页内容..."
     mkdir -p /var/www/html
-    wget -q -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "https://netflix.34310889.xyz"
+    FAKE_SITE="https://netflix.34310889.xyz"
+    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
+    
     cd /var/www/html && [ ! -f index.html ] && mv $(ls *.html 2>/dev/null | head -n 1) index.html || true
     [ ! -f index.html ] && echo "<html><body><h1>Site Under Maintenance</h1></body></html>" > index.html
     cd - > /dev/null
     chown -R caddy:caddy /var/www/html 2>/dev/null || true
 
+    # 注入 http_port/https_port，彻底根治 Caddy 与 Xray 抢占 443 导致的进程崩溃
     mkdir -p /etc/caddy
     cat >/etc/caddy/Caddyfile <<EOF
 {
     skip_install_trust
     auto_https disable_redirects
+    http_port 10080
+    https_port 10443
     servers { protocols h1 h2 }
 }
 https://${SNI}:${CADDYPORT} {

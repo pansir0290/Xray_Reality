@@ -21,7 +21,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/r
 ```
 最新脚本适配更多系统版本兼容性测试ing
 ```bash
-bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-pro.sh)
+bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality2026.sh)
 ```
 
 

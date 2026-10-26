@@ -7,7 +7,7 @@ export CI=1
 export AUTOMATION=1
 
 # ==========================================
-# [1] 跨系统包管理器支持与权限校验
+# [1] 跨系统包管理器支持
 # ==========================================
 if [[ $EUID -ne 0 ]]; then
 	echo "此脚本仅限 root 用户运行"
@@ -45,7 +45,6 @@ add_github_ipv6_hosts() {
 	fi
 	if [[ $UPDATE -eq 1 ]]; then
 		echo "无法获取Xray版本号，手动设置最新版本以确保安全"
-		echo "可能过时的信息 2025年12月的已知版本号为  v25.12.8"
 		read -rp "手动输入否则退出(直接回车默认v25.12.8)：" version_input
 		if [[ -z "$version_input" ]]; then
 			XRAYVER="--version v25.12.8"
@@ -54,7 +53,6 @@ add_github_ipv6_hosts() {
 		fi
 	fi
 
-	echo "setting GitHub IPv6 hosts"
 	cat <<EOF >>/etc/hosts
 # ==== GitHub IPv6 fallback ====
 2a01:4f8:c010:d56::2 github.com
@@ -115,9 +113,6 @@ EOF
 	echo "$OUTBOUND_CONFIG"
 }
 
-# ==========================================
-# [2] 网络侦测与基础环境收集
-# ==========================================
 TRACE4=$(curl -4 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE6=$(curl -6 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE="${TRACE4:-$TRACE6}"
@@ -185,7 +180,7 @@ show_sni_status() {
 }
 
 # ==========================================
-# [3] 核心 SNI 防呆向导 (彻底修复 Caddy ACME 崩溃)
+# [3] 核心伪装逻辑完全还原 (偷自己)
 # ==========================================
 handle_sni_setup() {
 	local first_run=true
@@ -199,9 +194,9 @@ handle_sni_setup() {
 			first_run=false
 			if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 				proposed_sni="$IPV4"
-				cert_type="自签"
-				color="$ORANGE"
-				autotls_value="tls internal"
+				cert_type="自动"
+				color="$GREEN"
+				autotls_value="tls { issuer acme { profile shortlived } }"
 			else
 				proposed_sni=$(generate_random_domain)
 				cert_type="自签"
@@ -217,8 +212,9 @@ handle_sni_setup() {
 		if [[ -z "$user_input" ]]; then
 			SNI="$proposed_sni"
 			AUTOTLS="$autotls_value"
-			# 修正：只要是自己输入的域名，强制赋予 HOST
-			[[ "$cert_type" == "自签(域名)" && "$proposed_sni" != "$IPV4" ]] && [[ -z "$HOST" ]] && HOST="$SNI"
+			if [[ "$cert_type" == "自动" && "$proposed_sni" != "$IPV4" ]]; then
+				[[ -z "$HOST" ]] && HOST="$SNI"
+			fi
 			break
 		fi
 
@@ -228,12 +224,13 @@ handle_sni_setup() {
 		fi
 
 		proposed_sni="$user_input"
+        # 还原原版灵魂：域名匹配成功就去申请真实证书
 		if check_dns_match "$proposed_sni"; then
-			cert_type="自签(强制)"
-			color="$ORANGE"
-			autotls_value="tls internal"
+			cert_type="自动"
+			color="$GREEN"
+			autotls_value=""
 		else
-			cert_type="自签(域名)"
+			cert_type="自签"
 			color="$ORANGE"
 			autotls_value="tls internal"
 		fi
@@ -248,7 +245,7 @@ else
 	if [[ "$SNI" == "rawip" ]]; then
 		if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 			SNI="$IPV4"
-			AUTOTLS="tls internal"
+			AUTOTLS="tls { issuer acme { profile shortlived } }"
 		else
 			unset SNI
 			handle_sni_setup
@@ -258,9 +255,9 @@ else
 			unset SNI
 			handle_sni_setup
 		else
-            # 无论域名是否解析到本机，为了配合 Xray Reality，一律强制 Caddy 自签
+            # 完全还原原版逻辑
 			if check_dns_match "$SNI"; then
-				AUTOTLS="tls internal"
+				AUTOTLS=""
 				[[ -z "$HOST" ]] && HOST="$SNI"
 			else
 				AUTOTLS="tls internal"
@@ -292,17 +289,16 @@ OUTBOUNDV6=$(cat <<EOF
 EOF
 )
 
-# 动态计算 Caddy 回落端口
 HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
-# 既然上面全部统一成了 tls internal，这里 Caddy 强制收束到 127.0.0.1:444
+# 【绝对修复点】：删除了 [::1]，彻底根治阿里云无 IPv6 导致的崩溃
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
 elif [[ "$AUTOTLS" == "tls internal" ]]; then
 	CADDYPORT=444
-	BINDLOCAL="bind 127.0.0.1 [::1]"
+	BINDLOCAL="bind 127.0.0.1" 
 	DEST="127.0.0.1:$CADDYPORT"
 else
 	DEST="127.0.0.1:$CADDYPORT"

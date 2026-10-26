@@ -19,6 +19,12 @@
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-pro.sh)
 ```
+最新脚本适配更多系统版本兼容性测试ing
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/pansir0290/Xray_Reality/main/reality-pro.sh)
+```
+
+
 ## 🛠 功能支持
 
 | 功能 | 说明 |

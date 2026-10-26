@@ -15,7 +15,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 echo -e "${CYAN}======================================================${NC}"
-echo -e "${CYAN}       Xray VLESS-Reality 全能自适应部署脚本 (修正版)    ${NC}"
+echo -e "${CYAN}       Xray VLESS-Reality 全能自适应部署脚本 (防弹版)    ${NC}"
 echo -e "${CYAN}======================================================${NC}"
 
 # ==========================================
@@ -47,13 +47,13 @@ echo -e "\n${GREEN}[2/6] 核心参数配置 (防呆向导)...${NC}"
 echo -e "\n${YELLOW}【步骤 A：设置伪装域名 (SNI)】${NC}"
 echo "作用：用于欺骗长城防火墙，让它以为你在访问一个正规网站。"
 echo "要求：必须是支持 TLSv1.3 的国外正规域名 (如 apple.com, dl.google.com 等)。"
-echo "提示：如果你不懂，请直接按回车，脚本将默认使用 apple.com"
+echo "提示：直接按回车，默认使用 apple.com"
 read -rp "请输入伪装域名 (SNI) [默认: apple.com]: " SNI
 SNI=${SNI:-"apple.com"}
 
 echo -e "\n${YELLOW}【步骤 B：设置连接地址 (HOST/DDNS)】${NC}"
-echo "作用：这是你的客户端(如 v2rayNG)真正去连接的地址。"
-echo "要求：填入你这台 VPS 的公网 IP。如果是动态 IP 或 NAT 机，请填入你的 DDNS 域名。"
+echo "作用：这是你的客户端真正去连接的地址。"
+echo "要求：填入你这台 VPS 的公网 IP 或 DDNS 域名。"
 read -rp "请输入 VPS IP 或 DDNS 域名: " HOST
 while [[ -z "$HOST" ]]; do
     read -rp "连接地址不能为空，请重新输入: " HOST
@@ -67,7 +67,7 @@ XRAY_PORT=${XRAY_PORT:-443}
 
 echo -e "\n${YELLOW}【步骤 D：设置 Caddy 内部回落端口】${NC}"
 echo "作用：Xray 会将非翻墙流量转交给本机的 Caddy 伪装网站。"
-echo "如果是 NAT 机且端口受限，可随便填一个未被占用的端口 (如 8443)。"
+echo "填入一个未被占用的高位端口 (如 8443)。"
 read -rp "请输入 Caddy 回落端口 [默认: 8443]: " CADDY_PORT
 CADDY_PORT=${CADDY_PORT:-8443}
 
@@ -76,30 +76,25 @@ CADDY_PORT=${CADDY_PORT:-8443}
 # ==========================================
 echo -e "\n${GREEN}[3/6] 安装 Xray 核心并生成安全凭证...${NC}"
 
-# 修复处：确保 Xray 已经被下载并安装
-if command -v systemctl >/dev/null 2>&1; then
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
-else
-    # 针对没有 systemd 的 Alpine 系统的独立安装逻辑
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
-fi
+# 下载并安装 Xray 核心
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
 
-UUID=$(uuidgen)
+# 兼容各个系统的 UUID 生成
+UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 SHORT_ID=$(openssl rand -hex 4)
-# 利用 openssl 派生最干净的 base64 私钥
-RAW_KEY=$(openssl rand -base64 32)
-# 利用刚安装好的 xray 官方命令提取并格式化
-KEY_PAIR=$(/usr/local/bin/xray x25519 -i "${RAW_KEY}" 2>/dev/null || xray x25519 -i "${RAW_KEY}")
-PRIVATE_KEY=$(echo "$KEY_PAIR" | grep -oP 'Private key: \K.*' | tr -d '\r\n')
-PUBLIC_KEY=$(echo "$KEY_PAIR" | grep -oP 'Public key: \K.*' | tr -d '\r\n')
+
+# 修复：直接利用自带功能派生，摒弃 grep -P 以兼容 Alpine
+KEY_PAIR=$(/usr/local/bin/xray x25519)
+PRIVATE_KEY=$(echo "$KEY_PAIR" | grep -i "Private key:" | awk '{print $3}' | tr -d '\r\n')
+PUBLIC_KEY=$(echo "$KEY_PAIR" | grep -i "Public key:" | awk '{print $3}' | tr -d '\r\n')
 
 if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
-    echo -e "${RED}密钥生成失败，请检查系统 openssl 或 xray 核心状态。${NC}"
+    echo -e "${RED}密钥生成失败，无法提取公私钥。${NC}"
     exit 1
 fi
 
 # ==========================================
-# 第四部分：部署独立化 Caddy (静态编译防依赖冲突)
+# 第四部分：部署独立化 Caddy (修复 SNI 盲区)
 # ==========================================
 echo -e "\n${GREEN}[4/6] 部署 Caddy 静态伪装站...${NC}"
 if [[ ! -f "/usr/local/bin/caddy" ]]; then
@@ -119,13 +114,14 @@ wget -q -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "https:/
 cd /var/www/html && [ ! -f index.html ] && mv $(ls *.html 2>/dev/null | head -n 1) index.html || true
 [ ! -f index.html ] && echo "<html><body><h1>Site Running</h1></body></html>" > index.html
 
-# 配置 Caddyfile (采用自签证书对接 Xray 回落)
+# 修复：显式绑定 SNI 域名，并限制仅在本地 127 监听
 mkdir -p /etc/caddy
 cat > /etc/caddy/Caddyfile <<EOF
 {
     skip_install_trust
 }
-https://127.0.0.1:${CADDY_PORT} {
+https://${SNI}:${CADDY_PORT}, https://127.0.0.1:${CADDY_PORT} {
+    bind 127.0.0.1
     tls internal
     root * /var/www/html
     file_server
@@ -191,7 +187,7 @@ EOF
 # ==========================================
 echo -e "\n${GREEN}[6/6] 接管系统服务并启动...${NC}"
 if command -v systemctl >/dev/null 2>&1; then
-    # Systemd 环境 (Debian/CentOS)
+    # ---------- Systemd 环境 (Debian/Ubuntu/CentOS) ----------
     cat > /etc/systemd/system/caddy.service <<EOF
 [Unit]
 Description=Caddy Web Server
@@ -218,8 +214,9 @@ EOF
     systemctl daemon-reload
     systemctl enable caddy xray
     systemctl restart caddy xray
+
 elif command -v rc-update >/dev/null 2>&1; then
-    # OpenRC 环境 (Alpine)
+    # ---------- OpenRC 环境 (Alpine 专享补丁) ----------
     cat > /etc/init.d/caddy <<EOF
 #!/sbin/openrc-run
 name="caddy"
@@ -230,11 +227,24 @@ pidfile="/run/caddy.pid"
 EOF
     chmod +x /etc/init.d/caddy
     rc-update add caddy default
-    rc-service caddy restart
     
-    # Alpine xray 处理
+    # 修复：手动为 Alpine 创建 xray 守护进程并注入后量子变量
+    cat > /etc/init.d/xray <<EOF
+#!/sbin/openrc-run
+name="xray"
+command="/usr/local/bin/xray"
+command_args="run -c /usr/local/etc/xray/config.json"
+command_background="yes"
+pidfile="/run/xray.pid"
+
+start_pre() {
     export GODEBUG="tlsmlkem=0"
+}
+EOF
+    chmod +x /etc/init.d/xray
     rc-update add xray default
+    
+    rc-service caddy restart
     rc-service xray restart
 fi
 

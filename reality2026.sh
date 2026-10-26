@@ -15,13 +15,16 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 echo -e "${CYAN}======================================================${NC}"
-echo -e "${CYAN}       Xray VLESS-Reality 全能自适应部署脚本 (防弹版)    ${NC}"
+echo -e "${CYAN}   Xray VLESS-Reality 全能旗舰部署脚本 (兼容+防呆+优化)  ${NC}"
 echo -e "${CYAN}======================================================${NC}"
+
+# 接收访客参数 (支持脚本后加参数自动生成多个访客节点)
+GUEST_ARGS=("$@")
 
 # ==========================================
 # 第一部分：环境自适应与依赖安装
 # ==========================================
-echo -e "\n${GREEN}[1/6] 侦测系统环境并安装依赖...${NC}"
+echo -e "\n${GREEN}[1/7] 侦测系统环境并安装依赖...${NC}"
 if command -v apt-get >/dev/null 2>&1; then
     PKG_MGR="apt"
     apt-get update -y
@@ -35,55 +38,70 @@ elif command -v yum >/dev/null 2>&1; then
     yum install -y epel-release
     yum install -y curl wget jq openssl util-linux qrencode tar
 else
-    echo -e "${RED}无法侦测到支持的包管理器 (apt/apk/yum)，脚本退出。${NC}"
+    echo -e "${RED}无法侦测到支持的包管理器，脚本退出。${NC}"
     exit 1
 fi
 
 # ==========================================
 # 第二部分：防呆交互式配置 (NAT与域名)
 # ==========================================
-echo -e "\n${GREEN}[2/6] 核心参数配置 (防呆向导)...${NC}"
+echo -e "\n${GREEN}[2/7] 核心参数配置 (防呆向导)...${NC}"
 
 echo -e "\n${YELLOW}【步骤 A：设置伪装域名 (SNI)】${NC}"
-echo "作用：用于欺骗长城防火墙，让它以为你在访问一个正规网站。"
-echo "要求：必须是支持 TLSv1.3 的国外正规域名 (如 apple.com, dl.google.com 等)。"
-echo "提示：直接按回车，默认使用 apple.com"
+echo "作用：欺骗防火墙，必须是支持 TLSv1.3 的国外正规域名 (如 apple.com)。"
 read -rp "请输入伪装域名 (SNI) [默认: apple.com]: " SNI
 SNI=${SNI:-"apple.com"}
 
 echo -e "\n${YELLOW}【步骤 B：设置连接地址 (HOST/DDNS)】${NC}"
-echo "作用：这是你的客户端真正去连接的地址。"
-echo "要求：填入你这台 VPS 的公网 IP 或 DDNS 域名。"
+echo "作用：客户端真正连接的地址 (公网 IP 或 DDNS)。"
 read -rp "请输入 VPS IP 或 DDNS 域名: " HOST
 while [[ -z "$HOST" ]]; do
     read -rp "连接地址不能为空，请重新输入: " HOST
 done
 
 echo -e "\n${YELLOW}【步骤 C：设置 Xray 监听端口 (适配 NAT)】${NC}"
-echo "作用：Xray 对外开放的端口。标准 VPS 建议用 443。"
-echo "如果是 NAT 机，请填入商家分配给你的可用外网端口 (例如 30443)。"
+echo "如果是 NAT 机，请填入商家分配的外网可用端口。"
 read -rp "请输入 Xray 端口 [默认: 443]: " XRAY_PORT
 XRAY_PORT=${XRAY_PORT:-443}
 
 echo -e "\n${YELLOW}【步骤 D：设置 Caddy 内部回落端口】${NC}"
-echo "作用：Xray 会将非翻墙流量转交给本机的 Caddy 伪装网站。"
 echo "填入一个未被占用的高位端口 (如 8443)。"
 read -rp "请输入 Caddy 回落端口 [默认: 8443]: " CADDY_PORT
 CADDY_PORT=${CADDY_PORT:-8443}
 
 # ==========================================
-# 第三部分：安装 Xray 并生成现代级密钥
+# 第三部分：内核网络极速优化 (BBR + Cake)
 # ==========================================
-echo -e "\n${GREEN}[3/6] 安装 Xray 核心并生成安全凭证...${NC}"
+echo -e "\n${GREEN}[3/7] 正在进行内核网络优化 (BBR)...${NC}"
+if [[ -f /etc/sysctl.conf ]] && command -v sysctl >/dev/null 2>&1; then
+    sed -i '/^### proxy optimization start ###$/,/^### proxy optimization end ###$/d' /etc/sysctl.conf
+    cat <<'EOF' >> /etc/sysctl.conf
+### proxy optimization start ###
+net.ipv4.tcp_congestion_control = bbr
+net.core.default_qdisc = cake
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
+net.ipv4.tcp_rmem = 8192 262144 33554432
+net.ipv4.tcp_wmem = 4096 16384 33554432
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_fastopen = 3
+### proxy optimization end ###
+EOF
+    sysctl -p 2>/dev/null || echo "Sysctl 应用部分失败，可能是轻量内核限制，已跳过。"
+else
+    echo "当前系统环境不支持 sysctl 调优，已跳过。"
+fi
 
-# 下载并安装 Xray 核心
+# ==========================================
+# 第四部分：安装 Xray 并生成现代级密钥
+# ==========================================
+echo -e "\n${GREEN}[4/7] 安装 Xray 核心并生成安全凭证...${NC}"
 bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata
 
-# 兼容各个系统的 UUID 生成
 UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 SHORT_ID=$(openssl rand -hex 4)
-
-# 修复：直接利用自带功能派生，摒弃 grep -P 以兼容 Alpine
 KEY_PAIR=$(/usr/local/bin/xray x25519)
 PRIVATE_KEY=$(echo "$KEY_PAIR" | grep -i "Private key:" | awk '{print $3}' | tr -d '\r\n')
 PUBLIC_KEY=$(echo "$KEY_PAIR" | grep -i "Public key:" | awk '{print $3}' | tr -d '\r\n')
@@ -93,10 +111,19 @@ if [[ -z "$PRIVATE_KEY" || -z "$PUBLIC_KEY" ]]; then
     exit 1
 fi
 
+# 处理多访客 (Guest) 参数
+GUEST_JSON=""
+for arg in "${GUEST_ARGS[@]}"; do
+    if [[ ${#arg} -lt 20 && "$arg" != "@lock" ]]; then
+        GUEST_UUID=$(/usr/local/bin/xray uuid -i "${arg}")
+        GUEST_JSON+=", { \"id\": \"${GUEST_UUID}\", \"email\": \"${arg}\", \"flow\": \"xtls-rprx-vision\" }"
+    fi
+done
+
 # ==========================================
-# 第四部分：部署独立化 Caddy (修复 SNI 盲区)
+# 第五部分：部署独立化 Caddy (静态+防黑洞)
 # ==========================================
-echo -e "\n${GREEN}[4/6] 部署 Caddy 静态伪装站...${NC}"
+echo -e "\n${GREEN}[5/7] 部署 Caddy 静态伪装站...${NC}"
 if [[ ! -f "/usr/local/bin/caddy" ]]; then
     ARCH=$(uname -m)
     case "$ARCH" in
@@ -108,13 +135,11 @@ if [[ ! -f "/usr/local/bin/caddy" ]]; then
     chmod +x /usr/local/bin/caddy
 fi
 
-# 抓取伪装模板
 mkdir -p /var/www/html
 wget -q -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "https://netflix.34310889.xyz"
 cd /var/www/html && [ ! -f index.html ] && mv $(ls *.html 2>/dev/null | head -n 1) index.html || true
 [ ! -f index.html ] && echo "<html><body><h1>Site Running</h1></body></html>" > index.html
 
-# 修复：显式绑定 SNI 域名，并限制仅在本地 127 监听
 mkdir -p /etc/caddy
 cat > /etc/caddy/Caddyfile <<EOF
 {
@@ -129,9 +154,9 @@ https://${SNI}:${CADDY_PORT}, https://127.0.0.1:${CADDY_PORT} {
 EOF
 
 # ==========================================
-# 第五部分：注入 Xray 强隔离配置
+# 第六部分：注入 Xray 强隔离配置
 # ==========================================
-echo -e "\n${GREEN}[5/6] 配置 Xray 底层逻辑...${NC}"
+echo -e "\n${GREEN}[6/7] 配置 Xray 底层逻辑...${NC}"
 mkdir -p /usr/local/etc/xray /var/log/xray
 
 cat > /usr/local/etc/xray/config.json <<EOF
@@ -148,10 +173,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "protocol": "vless",
       "settings": {
         "clients": [
-          {
-            "id": "${UUID}",
-            "flow": "xtls-rprx-vision"
-          }
+          { "id": "${UUID}", "email": "admin", "flow": "xtls-rprx-vision" }${GUEST_JSON}
         ],
         "decryption": "none"
       },
@@ -162,32 +184,24 @@ cat > /usr/local/etc/xray/config.json <<EOF
           "show": false,
           "dest": "127.0.0.1:${CADDY_PORT}",
           "xver": 0,
-          "serverNames": [
-            "${SNI}"
-          ],
+          "serverNames": ["${SNI}"],
           "privateKey": "${PRIVATE_KEY}",
-          "shortIds": [
-            "${SHORT_ID}"
-          ]
+          "shortIds": ["${SHORT_ID}"]
         }
       }
     }
   ],
   "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct"
-    }
+    { "protocol": "freedom", "tag": "direct" }
   ]
 }
 EOF
 
 # ==========================================
-# 第六部分：多系统服务接管与启动
+# 第七部分：多系统服务接管与启动
 # ==========================================
-echo -e "\n${GREEN}[6/6] 接管系统服务并启动...${NC}"
+echo -e "\n${GREEN}[7/7] 接管系统服务并启动...${NC}"
 if command -v systemctl >/dev/null 2>&1; then
-    # ---------- Systemd 环境 (Debian/Ubuntu/CentOS) ----------
     cat > /etc/systemd/system/caddy.service <<EOF
 [Unit]
 Description=Caddy Web Server
@@ -202,7 +216,6 @@ Restart=on-failure
 WantedBy=multi-user.target
 EOF
 
-    # 注入后量子免疫与 Root 权限
     mkdir -p /etc/systemd/system/xray.service.d
     cat > /etc/systemd/system/xray.service.d/override.conf <<EOF
 [Service]
@@ -214,9 +227,7 @@ EOF
     systemctl daemon-reload
     systemctl enable caddy xray
     systemctl restart caddy xray
-
 elif command -v rc-update >/dev/null 2>&1; then
-    # ---------- OpenRC 环境 (Alpine 专享补丁) ----------
     cat > /etc/init.d/caddy <<EOF
 #!/sbin/openrc-run
 name="caddy"
@@ -228,7 +239,6 @@ EOF
     chmod +x /etc/init.d/caddy
     rc-update add caddy default
     
-    # 修复：手动为 Alpine 创建 xray 守护进程并注入后量子变量
     cat > /etc/init.d/xray <<EOF
 #!/sbin/openrc-run
 name="xray"
@@ -249,15 +259,33 @@ EOF
 fi
 
 # ==========================================
-# 输出节点信息
+# 自动抓取节点位置并输出结果
 # ==========================================
-URL="vless://${UUID}@${HOST}:${XRAY_PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}#Xray-Reality-Node"
+# 获取 IPAPI 地理位置信息 (还原原版精髓)
+JSON_LOC=$(curl -s -L --retry 1 https://ipapi.co/json/ || echo "{}")
+CITY=$(echo "$JSON_LOC" | grep -oP '"city"\s*:\s*"\K[^"]+' | sed 's/[^a-zA-Z0-9]//g')
+ASN=$(echo "$JSON_LOC" | grep -oP '"asn"\s*:\s*"AS\K\d+')
+COUNTRYCODE=$(curl -4 -s https://dash.cloudflare.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
+NODE_NAME="${COUNTRYCODE}-${CITY}AS${ASN}"
+[ "$NODE_NAME" == "-AS" ] && NODE_NAME="Xray-Reality"
+
+URL="vless://${UUID}@${HOST}:${XRAY_PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}#${NODE_NAME}"
 
 echo -e "\n${CYAN}======================================================${NC}"
-echo -e "${GREEN}部署大功告成！节点信息如下：${NC}"
+echo -e "${GREEN}部署大功告成！主节点信息如下：${NC}"
 echo -e "${CYAN}======================================================${NC}"
 echo -e "${YELLOW}URL 连接：${NC}"
 echo -e "${URL}\n"
 qrencode -t UTF8 "$URL"
+
+if [[ -n "${GUEST_JSON}" ]]; then
+    echo -e "\n${CYAN}---------- 访客 (Guest) 节点列表 ----------${NC}"
+    for arg in "${GUEST_ARGS[@]}"; do
+        if [[ ${#arg} -lt 20 && "$arg" != "@lock" ]]; then
+            GUEST_UUID=$(/usr/local/bin/xray uuid -i "${arg}")
+            echo -e "vless://${GUEST_UUID}@${HOST}:${XRAY_PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${PUBLIC_KEY}&sid=${SHORT_ID}#${NODE_NAME}-${arg}"
+        fi
+    done
+fi
+
 echo -e "\n${CYAN}配置文件位置：${NC} /usr/local/etc/xray/config.json"
-echo -e "${CYAN}日志文件位置：${NC} /var/log/xray/error.log"

@@ -7,7 +7,7 @@ export CI=1
 export AUTOMATION=1
 
 # ==========================================
-# [修复 1] 跨系统包管理器支持 (不再仅限 Debian)
+# [1] 跨系统包管理器支持与权限校验
 # ==========================================
 if [[ $EUID -ne 0 ]]; then
 	echo "此脚本仅限 root 用户运行"
@@ -26,7 +26,6 @@ else
 fi
 
 SEED=${SEED:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)}
-# 如果环境变量未传递 PORT，默认 443
 PORT=${PORT:-"443"}
 UPDATE=1
 V6ONLY=0
@@ -47,9 +46,9 @@ add_github_ipv6_hosts() {
 	if [[ $UPDATE -eq 1 ]]; then
 		echo "无法获取Xray版本号，手动设置最新版本以确保安全"
 		echo "可能过时的信息 2025年12月的已知版本号为  v25.12.8"
-		read -rp "手动输入否则退出：" version_input
+		read -rp "手动输入否则退出(直接回车默认v25.12.8)：" version_input
 		if [[ -z "$version_input" ]]; then
-			exit 1
+			XRAYVER="--version v25.12.8"
 		else
 			XRAYVER="--version $version_input"
 		fi
@@ -116,8 +115,11 @@ EOF
 	echo "$OUTBOUND_CONFIG"
 }
 
-TRACE4=$(curl -4 -s https://dash.cloudflare.com/cdn-cgi/trace)
-TRACE6=$(curl -6 -s https://dash.cloudflare.com/cdn-cgi/trace)
+# ==========================================
+# [2] 网络侦测与基础环境收集
+# ==========================================
+TRACE4=$(curl -4 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
+TRACE6=$(curl -6 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE="${TRACE4:-$TRACE6}"
 if [[ -z "$TRACE4" ]]; then
 	V6ONLY=1
@@ -182,6 +184,9 @@ show_sni_status() {
 	echo "------"
 }
 
+# ==========================================
+# [3] 核心 SNI 防呆向导 (彻底修复 Caddy ACME 崩溃)
+# ==========================================
 handle_sni_setup() {
 	local first_run=true
 	local proposed_sni=""
@@ -194,9 +199,9 @@ handle_sni_setup() {
 			first_run=false
 			if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 				proposed_sni="$IPV4"
-				cert_type="自动"
-				color="$GREEN"
-				autotls_value="tls { issuer acme { profile shortlived } }"
+				cert_type="自签"
+				color="$ORANGE"
+				autotls_value="tls internal"
 			else
 				proposed_sni=$(generate_random_domain)
 				cert_type="自签"
@@ -212,9 +217,8 @@ handle_sni_setup() {
 		if [[ -z "$user_input" ]]; then
 			SNI="$proposed_sni"
 			AUTOTLS="$autotls_value"
-			if [[ "$cert_type" == "自动" && "$proposed_sni" != "$IPV4" ]]; then
-				[[ -z "$HOST" ]] && HOST="$SNI"
-			fi
+			# 修正：只要是自己输入的域名，强制赋予 HOST
+			[[ "$cert_type" == "自签(域名)" && "$proposed_sni" != "$IPV4" ]] && [[ -z "$HOST" ]] && HOST="$SNI"
 			break
 		fi
 
@@ -225,11 +229,11 @@ handle_sni_setup() {
 
 		proposed_sni="$user_input"
 		if check_dns_match "$proposed_sni"; then
-			cert_type="自动"
-			color="$GREEN"
-			autotls_value=""
+			cert_type="自签(强制)"
+			color="$ORANGE"
+			autotls_value="tls internal"
 		else
-			cert_type="自签"
+			cert_type="自签(域名)"
 			color="$ORANGE"
 			autotls_value="tls internal"
 		fi
@@ -244,7 +248,7 @@ else
 	if [[ "$SNI" == "rawip" ]]; then
 		if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 			SNI="$IPV4"
-			AUTOTLS="tls { issuer acme { profile shortlived } }"
+			AUTOTLS="tls internal"
 		else
 			unset SNI
 			handle_sni_setup
@@ -254,8 +258,9 @@ else
 			unset SNI
 			handle_sni_setup
 		else
+            # 无论域名是否解析到本机，为了配合 Xray Reality，一律强制 Caddy 自签
 			if check_dns_match "$SNI"; then
-				AUTOTLS=""
+				AUTOTLS="tls internal"
 				[[ -z "$HOST" ]] && HOST="$SNI"
 			else
 				AUTOTLS="tls internal"
@@ -264,13 +269,11 @@ else
 	fi
 fi
 
-# ==========================================
-# [新增功能 2] 交互式确认 NAT 端口与连接地址
-# ==========================================
 if [[ -z "$HOST" ]]; then
     read -rp "无法推断直连地址，请手动输入 VPS IP 或 DDNS 域名: " HOST
     if [[ "$HOST" == *:* && "$HOST" != *\]* ]]; then HOST="[$HOST]"; fi
 fi
+
 read -rp "当前 Xray 端口为 $PORT。如果是 NAT 机器，请输入外网映射端口 (直接回车保持 $PORT): " input_port
 if [[ -n "$input_port" ]]; then
     PORT="$input_port"
@@ -289,11 +292,12 @@ OUTBOUNDV6=$(cat <<EOF
 EOF
 )
 
-# SEED 派生固定 CADDY 回落端口
+# 动态计算 Caddy 回落端口
 HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
+# 既然上面全部统一成了 tls internal，这里 Caddy 强制收束到 127.0.0.1:444
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
 elif [[ "$AUTOTLS" == "tls internal" ]]; then
@@ -306,8 +310,10 @@ fi
 
 warning000="Caddy listen on $DEST"
 
+# ==========================================
+# [4] 基础组件安装与 Caddy 伪装站拉取
+# ==========================================
 if [[ $UPDATE -eq 1 ]]; then
-    # 跨系统包安装
     if [[ "$PKG_MGR" == "apt" ]]; then
         echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
         apt-get update && apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
@@ -339,8 +345,9 @@ https://${SNI}:${CADDYPORT} {
     file_server
 }
 EOF
-    # 跨系统 Caddy 服务启动
+    
     if command -v systemctl >/dev/null; then
+        systemctl daemon-reload
         systemctl enable caddy && systemctl restart caddy
     else
         rc-update add caddy default && rc-service caddy restart
@@ -362,12 +369,13 @@ elif [[ "$WARP4" != "off" ]]; then
 	OUTBOUND=$OUTBOUNDV6
 fi
 
-# 安装 Xray 核心
+# ==========================================
+# [5] Xray 核心部署与 SEED 派生凭证
+# ==========================================
 if [[ $UPDATE -eq 1 ]]; then
 	bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata $XRAYVER
 fi
 
-# 跨系统 UUID 生成兼容 (Alpine 无 uuidgen 时回退)
 UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
 
 args=("$@")
@@ -380,7 +388,6 @@ if [[ ${#args[@]} -gt 0 ]]; then
 	done
 fi
 
-# 保持原版灵魂：通过 SEED 强制派生固定密钥体系 (DD 救星)
 priv_hex=$(echo -n "$SEED" | sha256sum | cut -c1-64)
 priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
 tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
@@ -389,15 +396,12 @@ public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p'
 short_id=$(openssl rand -hex 4)
 
 if [[ -z "$private_key" || -z "$public_key" ]]; then
-    echo "致命错误：无法从 Xray 派生密钥！"
+    echo "致命错误：无法从 Xray 派生密钥！系统依赖缺失或核心已损坏。"
     exit 1
 fi
 
 mkdir -p /usr/local/etc/xray /var/log/xray
 
-# ==========================================
-# [修复 3] 修复 serverNames 数组中的 "" 致命暗坑
-# ==========================================
 cat >/usr/local/etc/xray/config.json <<-EOF
 	{
 	  "log": { "access": "none", "error": "/var/log/xray/error.log", "loglevel": "warning" },
@@ -448,7 +452,7 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 EOF
 
 # ==========================================
-# [修复 4] 跨系统接管与注入 Go 1.24+ 后量子免疫
+# [6] 注入 Go 1.24+ 免疫，系统服务重启与网络优化
 # ==========================================
 if command -v systemctl >/dev/null; then
     mkdir -p /etc/systemd/system/xray.service.d
@@ -461,7 +465,6 @@ EOF
     systemctl daemon-reload
     systemctl enable xray && systemctl restart xray
 else
-    # Alpine OpenRC 补丁
     sed -i '/start_pre()/a \    export GODEBUG="tlsmlkem=0"' /etc/init.d/xray 2>/dev/null || true
     rc-update add xray default && rc-service xray restart
 fi
@@ -481,10 +484,15 @@ fi
 
 sed -i '/^# ==== GitHub IPv6 fallback ====$/,/^# ==== End GitHub IPv6 fallback ====$/d' /etc/hosts
 
+# ==========================================
+# [7] 生成节点链接并输出结果
+# ==========================================
 json=$(curl -s -L --retry 1 https://ipapi.co/json/ || echo "{}")
 CITY=$(echo "$json" | grep -oP '"city"\s*:\s*"\K[^"]+' | sed 's/[^a-zA-Z0-9]//g')
 ASN=$(echo "$json" | grep -oP '"asn"\s*:\s*"AS\K\d+')
-COUNTRYCODE=$(echo "$TRACE" | grep '^loc=' | cut -d= -f2)
+COUNTRYCODE=$(curl -4 -s https://dash.cloudflare.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
+NODE_NAME="${COUNTRYCODE}-${CITY}AS${ASN}"
+[ "$NODE_NAME" == "-AS" ] && NODE_NAME="Xray-Reality"
 
 insert="SEED=$SEED"
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
@@ -500,7 +508,7 @@ else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${NODE_NAME}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
@@ -514,7 +522,7 @@ if [[ -n "$guests" ]]; then
 	for arg in "${args[@]}"; do
 		if [[ "$arg" == "@lock" ]]; then continue; fi
 		guest_uuid=$(xray uuid -i "${arg}")
-		echo "vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}-${arg}" >>~/_xray_url_
+		echo "vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${NODE_NAME}-${arg}" >>~/_xray_url_
 	done
 fi
 

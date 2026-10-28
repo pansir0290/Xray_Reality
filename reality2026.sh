@@ -53,7 +53,6 @@ add_github_ipv6_hosts() {
 		fi
 	fi
 
-	echo "setting GitHub IPv6 hosts"
 	cat <<EOF >>/etc/hosts
 # ==== GitHub IPv6 fallback ====
 2a01:4f8:c010:d56::2 github.com
@@ -135,6 +134,7 @@ TS=$(echo "$TRACE" | grep '^ts=' | cut -d= -f2 | cut -d. -f1)
 
 GREEN='\033[0;32m'
 ORANGE='\033[0;33m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 check_ipv4_on_interface() {
@@ -184,7 +184,7 @@ show_sni_status() {
 }
 
 # ==========================================
-# [3] 原汁原味的自动公网证书逻辑 (偷天换日)
+# [3] SNI 选择与破冰 DEST 判定
 # ==========================================
 handle_sni_setup() {
 	local first_run=true
@@ -228,7 +228,6 @@ handle_sni_setup() {
 		fi
 
 		proposed_sni="$user_input"
-		# 完美还原：域名验证匹配，则开启真实证书申请
 		if check_dns_match "$proposed_sni"; then
 			cert_type="自动"
 			color="$GREEN"
@@ -292,33 +291,27 @@ OUTBOUNDV6=$(cat <<EOF
 EOF
 )
 
-# 动态计算 Caddy 回落端口
 HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
-# 【核心修复点】：无论是否申请真实证书，只要是通过 Xray 本地代理，全部锁死 bind 127.0.0.1！
-# 这彻底根治了阿里云等内核禁用 IPv6 的机器上 Caddy 尝试绑定 [::] 导致崩溃的恶性 Bug。
-if [[ "$AUTOTLS" == *"shortlived"* ]]; then
-	DEST="$SNI:$CADDYPORT"
-    BINDLOCAL=""
-elif [[ "$AUTOTLS" == "tls internal" ]]; then
-	CADDYPORT=444
+# 针对最新版 Xray 的核心破冰改动：
+if [[ "$AUTOTLS" == *"tls internal"* ]]; then
+    # 场景 B：域名不匹配，强制使用别人域名做 dest 以防止新版 Xray 崩溃
+	DEST="${SNI}:443"
 	BINDLOCAL="bind 127.0.0.1" 
-	DEST="127.0.0.1:$CADDYPORT"
 else
+    # 场景 A：偷自己域名，由本地 Caddy 承接
     BINDLOCAL="bind 127.0.0.1"
 	DEST="127.0.0.1:$CADDYPORT"
 fi
-
-warning000="Caddy listen on $DEST"
+warning000="Xray Dest target: $DEST | Caddy listen on 127.0.0.1:$CADDYPORT"
 
 # ==========================================
-# [4] GPG 彻底修复、Caddy 安装与网页完美伪装
+# [4] 打破死锁：Caddy 抢跑获取真实证书
 # ==========================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ "$PKG_MGR" == "apt" ]]; then
-        # 彻底修复 Debian 13 源拉取报 NO_PUBKEY 的致命问题
         rm -f /etc/apt/sources.list.d/caddy-stable.list
         apt-get update -y || true
         apt-get install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
@@ -333,28 +326,45 @@ if [[ $UPDATE -eq 1 ]]; then
         yum install -y caddy unzip qrencode vim-common jq util-linux wget
     fi
 
-    # 还原：你原版设计的网页自动扒取与存放逻辑
     echo -e "\n正在下载伪装网页内容 (Netflix 模板)..."
     mkdir -p /var/www/html
     FAKE_SITE="https://netflix.34310889.xyz"
     wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
-    
     cd /var/www/html && [ ! -f index.html ] && mv $(ls *.html 2>/dev/null | head -n 1) index.html || true
     [ ! -f index.html ] && echo "<html><body><h1>Site Under Maintenance</h1></body></html>" > index.html
     cd - > /dev/null
     chown -R caddy:caddy /var/www/html 2>/dev/null || true
 
-    # 使用你原本一模一样的 Caddyfile 排版格式
+    # 如果是偷自己域名，为了防止 Xray 启动因为 Caddy 没证书而崩溃，主动打破死锁：
+    if [[ -z "$AUTOTLS" ]]; then
+        echo -e "\n${YELLOW}【证书破冰】正在临时让 Caddy 霸占 443 端口获取 Let's Encrypt 真实证书...${NC}"
+        systemctl stop xray 2>/dev/null || true
+        mkdir -p /etc/caddy
+        cat >/etc/caddy/Caddyfile <<EOF
+${SNI}:443 {
+    root * /var/www/html
+    file_server
+}
+EOF
+        if command -v systemctl >/dev/null; then systemctl restart caddy; else rc-service caddy restart; fi
+        
+        for i in {15..1}; do
+            echo -ne "等待证书下发以解除 Xray 死锁... $i 秒\r"
+            sleep 1
+        done
+        echo -e "\n初始证书签发完成，将 Caddy 退回本地伪装层..."
+    fi
+
+    # 写入常规 Caddy 伪装配置
     mkdir -p /etc/caddy
     cat >/etc/caddy/Caddyfile <<EOF
 {
     skip_install_trust
     auto_https disable_redirects
-    servers {
-        protocols h1 h2
-    }
+    http_port 10080
+    https_port 10443
+    servers { protocols h1 h2 }
 }
-
 https://${SNI}:${CADDYPORT} {
     ${AUTOTLS}
     ${BINDLOCAL} 
@@ -363,16 +373,10 @@ https://${SNI}:${CADDYPORT} {
 }
 EOF
     
-    # 增加 caddy fmt 校验并加入了错误自排查输出
     if command -v systemctl >/dev/null; then
         caddy fmt --overwrite /etc/caddy/Caddyfile
         systemctl daemon-reload
-        systemctl enable caddy
-        systemctl restart caddy || {
-            echo -e "\n${ORANGE}Caddy 启动失败！为你抓取了报错日志：${NC}"
-            journalctl -xeu caddy.service --no-pager | tail -n 15
-            exit 1
-        }
+        systemctl enable caddy && systemctl restart caddy
     else
         rc-update add caddy default && rc-service caddy restart
     fi
@@ -386,7 +390,6 @@ if [[ $V6ONLY -eq 1 ]]; then
 		OUTBOUND=$(get_warp_outbound_config)
 		if [ $? -ne 0 ]; then
 			OUTBOUND=$OUTBOUNDV6
-			warning003="WARP出口获取失败，使用纯v6出站"
 		fi
 	fi
 elif [[ "$WARP4" != "off" ]]; then
@@ -418,11 +421,6 @@ tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
 private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p')
 public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p')
 short_id=$(openssl rand -hex 4)
-
-if [[ -z "$private_key" || -z "$public_key" ]]; then
-    echo "致命错误：无法从 Xray 派生密钥！系统依赖缺失或核心已损坏。"
-    exit 1
-fi
 
 mkdir -p /usr/local/etc/xray /var/log/xray
 
@@ -475,9 +473,6 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	}
 EOF
 
-# ==========================================
-# [6] 注入 Go 1.24+ 免疫，系统服务重启与网络优化
-# ==========================================
 if command -v systemctl >/dev/null; then
     mkdir -p /etc/systemd/system/xray.service.d
     cat > /etc/systemd/system/xray.service.d/override.conf <<EOF
@@ -487,7 +482,11 @@ Group=root
 Environment="GODEBUG=tlsmlkem=0"
 EOF
     systemctl daemon-reload
-    systemctl enable xray && systemctl restart xray
+    systemctl enable xray && systemctl restart xray || {
+        echo -e "\n${ORANGE}Xray 启动依然失败！诊断日志如下：${NC}"
+        /usr/local/bin/xray run -config /usr/local/etc/xray/config.json -test
+        exit 1
+    }
 else
     sed -i '/start_pre()/a \    export GODEBUG="tlsmlkem=0"' /etc/init.d/xray 2>/dev/null || true
     rc-update add xray default && rc-service xray restart
@@ -508,9 +507,6 @@ fi
 
 sed -i '/^# ==== GitHub IPv6 fallback ====$/,/^# ==== End GitHub IPv6 fallback ====$/d' /etc/hosts
 
-# ==========================================
-# [7] 生成节点链接并输出结果
-# ==========================================
 json=$(curl -s -L --retry 1 https://ipapi.co/json/ || echo "{}")
 CITY=$(echo "$json" | grep -oP '"city"\s*:\s*"\K[^"]+' | sed 's/[^a-zA-Z0-9]//g')
 ASN=$(echo "$json" | grep -oP '"asn"\s*:\s*"AS\K\d+')
@@ -519,7 +515,7 @@ NODE_NAME="${COUNTRYCODE}-${CITY}AS${ASN}"
 [ "$NODE_NAME" == "-AS" ] && NODE_NAME="Xray-Reality"
 
 insert="SEED=$SEED"
-if [[ "$AUTOTLS" == *"shortlived"* ]]; then
+if [[ "$AUTOTLS" == *"tls internal"* ]]; then
 	insert+=" SNI=rawip"
 else
 	insert+=" SNI=$SNI"

@@ -385,15 +385,18 @@ fi
 
 warning000="Caddy listen on $DEST"
 
-# 安装基础组件和caddy
+# =========================================================================
+# 安装基础组件和caddy (修复版本：加入 admin off、清理僵尸进程、沙盒路径)
+# =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ -f /etc/caddy/Caddyfile ]]; then
         mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
         warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
     fi
     
-    # 停止可能存在的残留崩溃进程，防止锁死
+    # 强制停止可能存在的残留崩溃进程，释放 2019 端口
     systemctl stop caddy 2>/dev/null
+    killall -9 caddy 2>/dev/null
 
     echo "deb [trusted=yes] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" >/etc/apt/sources.list.d/caddy-stable.list
 
@@ -406,7 +409,7 @@ if [[ $UPDATE -eq 1 ]]; then
     mkdir -p /var/www/html /var/lib/caddy /var/log/caddy
     FAKE_SITE="https://netflix.34310889.xyz" 
     
-    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
+    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE" 2>/dev/null
     
     cd /var/www/html
     if [ ! -f index.html ]; then
@@ -422,7 +425,7 @@ if [[ $UPDATE -eq 1 ]]; then
     chown -R caddy:caddy /var/www/html /var/lib/caddy /var/log/caddy
     # === 抓取结束 ===
 
-    # 【核心修复 1】注入 Systemd 防爆覆盖（指定 HOME 路径、抗量子免疫）
+    # 注入 Systemd 防爆覆盖（指定 HOME 路径、抗量子免疫）
     mkdir -p /etc/systemd/system/caddy.service.d
     cat > /etc/systemd/system/caddy.service.d/override.conf <<EOF
 [Service]
@@ -434,9 +437,10 @@ ExecStart=
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EOF
 
-    # 【核心修复 2】写入现代 Caddyfile（禁用 HTTP/3，锁定 h1 h2 阻止高位 UDP 端口崩溃）
+    # 写入 Caddyfile（加入 admin off 彻底解决 2019 端口冲突，锁定 h1/h2 规避高位 UDP）
     cat >/etc/caddy/Caddyfile <<EOF
 {
+    admin off
     skip_install_trust
     auto_https disable_redirects
     servers {

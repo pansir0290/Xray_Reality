@@ -1,4 +1,9 @@
 #!/bin/bash
+# =========================================================================
+# 项目名称：Xray Reality + Caddy 真证书网页伪装 + Vision 一键现代化完整脚本
+# 适配环境：Debian 11/12+ | 兼容最新版 Xray & Go 1.23+ 新版 Caddy
+# =========================================================================
+
 BASEURL="https://gitea.com/pinkdog/xrayinstaller/raw/branch/main/"
 export XRAYVER=""
 export DEBIAN_FRONTEND=noninteractive
@@ -6,23 +11,16 @@ export DEBCONF_NONINTERACTIVE_SEEN=true
 export CI=1
 export AUTOMATION=1
 
-# ==========================================
-# [1] 环境预检与跨系统支持
-# ==========================================
-if [[ $EUID -ne 0 ]]; then
-	echo "此脚本仅限 root 用户运行"
+# 检查系统类型
+if [[ ! -f /etc/debian_version ]]; then
+	echo "此脚本仅适用于 Debian/Ubuntu 系统"
 	exit 1
 fi
 
-if command -v apt-get >/dev/null 2>&1; then
-    PKG_MGR="apt"
-elif command -v apk >/dev/null 2>&1; then
-    PKG_MGR="apk"
-elif command -v yum >/dev/null 2>&1; then
-    PKG_MGR="yum"
-else
-    echo "不支持的系统包管理器，仅支持 Debian/Ubuntu/Alpine/CentOS"
-    exit 1
+# 检查 Root 权限
+if [[ $EUID -ne 0 ]]; then
+	echo "此简易脚本仅限 root 用户运行"
+	exit 1
 fi
 
 SEED=${SEED:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)}
@@ -45,23 +43,27 @@ add_github_ipv6_hosts() {
 	fi
 	if [[ $UPDATE -eq 1 ]]; then
 		echo "无法获取Xray版本号，手动设置最新版本以确保安全"
-		read -rp "手动输入否则退出(直接回车默认v25.12.8)：" version_input
+		echo "可能过时的信息 2025年12月的已知版本号为  v25.12.8"
+		read -rp "手动输入否则退出：" version_input
 		if [[ -z "$version_input" ]]; then
-			XRAYVER="--version v25.12.8"
+			exit 1
 		else
 			XRAYVER="--version $version_input"
 		fi
 	fi
 
+	echo "setting GitHub IPv6 hosts"
 	cat <<EOF >>/etc/hosts
 # ==== GitHub IPv6 fallback ====
+# ref: https://danwin1210.de/github-ipv6-proxy.php
 2a01:4f8:c010:d56::2 github.com
 2a01:4f8:c010:d56::3 api.github.com
 2a01:4f8:c010:d56::4 codeload.github.com
 2a01:4f8:c010:d56::6 ghcr.io
+2a01:4f8:c010:d56::7 pkg.github.com npm.pkg.github.com maven.pkg.github.com nuget.pkg.github.com rubygems.pkg.github.com
 2a01:4f8:c010:d56::8 uploads.github.com
-2606:50c0:8000::133 objects.githubusercontent.com www.objects.githubusercontent.com
-2606:50c0:8000::154 github.githubassets.com github-cloud.githubusercontent.com
+2606:50c0:8000::133 objects.githubusercontent.com www.objects.githubusercontent.com release-assets.githubusercontent.com gist.githubusercontent.com repository-images.githubusercontent.com camo.githubusercontent.com private-user-images.githubusercontent.com avatars0.githubusercontent.com avatars1.githubusercontent.com avatars2.githubusercontent.com avatars3.githubusercontent.com cloud.githubusercontent.com desktop.githubusercontent.com support.github.com
+2606:50c0:8000::154 support-assets.githubassets.com github.githubassets.com opengraph.githubassets.com github-registry-files.githubusercontent.com github-cloud.githubusercontent.com
 # ==== End GitHub IPv6 fallback ====
 EOF
 }
@@ -93,11 +95,17 @@ get_warp_outbound_config() {
       "protocol": "wireguard",
       "settings": {
         "secretKey": "$PRIVATE_KEY",
-        "address": [ "$V4/32", "$V6/128" ],
+        "address": [
+          "$V4/32",
+          "$V6/128"
+        ],
         "peers": [
           {
             "publicKey": "$PUBLIC_KEY",
-            "allowedIPs": [ "0.0.0.0/0", "::/0" ],
+            "allowedIPs": [
+              "0.0.0.0/0",
+              "::/0"
+            ],
             "endpoint": "$ENDPOINT_V6:500",
             "keepAlive": 25
           }
@@ -113,8 +121,9 @@ EOF
 	echo "$OUTBOUND_CONFIG"
 }
 
-TRACE4=$(curl -4 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
-TRACE6=$(curl -6 -s --max-time 3 https://dash.cloudflare.com/cdn-cgi/trace)
+# 获取基本网络信息
+TRACE4=$(curl -4 -s https://dash.cloudflare.com/cdn-cgi/trace)
+TRACE6=$(curl -6 -s https://dash.cloudflare.com/cdn-cgi/trace)
 TRACE="${TRACE4:-$TRACE6}"
 if [[ -z "$TRACE4" ]]; then
 	V6ONLY=1
@@ -129,16 +138,17 @@ if [[ "$WARP6" == "off" ]]; then
 fi
 TS=$(echo "$TRACE" | grep '^ts=' | cut -d= -f2 | cut -d. -f1)
 
-GREEN='\033[0;32m'
-ORANGE='\033[0;33m'
-NC='\033[0m'
-
+###### SNI模块开始
 check_ipv4_on_interface() {
 	local ip="$1"
 	[[ -z "$ip" ]] && return 1
 	ip a | grep -q "inet ${ip}/"
 	return $?
 }
+
+GREEN='\033[0;32m'
+ORANGE='\033[0;33m'
+NC='\033[0m'
 
 is_valid_domain() {
 	local domain="$1"
@@ -148,7 +158,9 @@ is_valid_domain() {
 	for part in "${parts[@]}"; do
 		[[ -z "$part" ]] && return 1
 		[[ "$part" == -* || "$part" == *- ]] && return 1
-		if ! [[ "$part" =~ ^[a-zA-Z0-9-]+$ ]]; then return 1; fi
+		if ! [[ "$part" =~ ^[a-zA-Z0-9-]+$ ]]; then
+			return 1
+		fi
 	done
 	return 0
 }
@@ -169,19 +181,33 @@ check_dns_match() {
 }
 
 generate_random_domain() {
-	local default_sni="$((RANDOM + RANDOM + RANDOM)).com"
+	local default_sni=""
+	response=$(curl -s --max-time 5 -w "\n%{http_code}" "https://random-word-api.vercel.app/api?words=2" 2>/dev/null)
+	http_code=$(echo "$response" | tail -n1)
+	response=$(echo "$response" | head -n-1)
+
+	if [[ "$http_code" == "200" ]] && [[ -n "$response" ]]; then
+		cleaned=$(echo "$response" | tr -cd 'a-z')
+		if [[ -n "$cleaned" ]]; then
+			default_sni="${cleaned}.net"
+		else
+			default_sni="$((RANDOM + RANDOM + RANDOM)).com"
+		fi
+	else
+		default_sni="$((RANDOM + RANDOM + RANDOM)).com"
+	fi
 	echo "$default_sni"
 }
 
 show_sni_status() {
-	echo "使用：$1"
-	echo -e "签名：$3$2${NC}"
+	local sni="$1"
+	local cert_type="$2"
+	local color="$3"
+	echo "使用：${sni}"
+	echo -e "签名：${color}${cert_type}${NC}"
 	echo "------"
 }
 
-# ==========================================
-# [3] 原汁原味的 SNI 与证书获取逻辑
-# ==========================================
 handle_sni_setup() {
 	local first_run=true
 	local proposed_sni=""
@@ -192,11 +218,16 @@ handle_sni_setup() {
 	while true; do
 		if [[ "$first_run" == true ]]; then
 			first_run=false
+			echo "未设置SNI，自动生成SNI中"
 			if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 				proposed_sni="$IPV4"
 				cert_type="自动"
 				color="$GREEN"
-				autotls_value="tls { issuer acme { profile shortlived } }"
+				autotls_value="tls {
+    issuer acme {
+      profile shortlived
+    }
+  }"
 			else
 				proposed_sni=$(generate_random_domain)
 				cert_type="自签"
@@ -206,7 +237,7 @@ handle_sni_setup() {
 			show_sni_status "$proposed_sni" "$cert_type" "$color"
 		fi
 
-		read -rp "回车确认或输入其他SNI伪装域名: " user_input
+		read -rp "回车确认或输入其他SNI: " user_input
 		user_input=$(echo "$user_input" | tr '[:upper:]' '[:lower:]')
 
 		if [[ -z "$user_input" ]]; then
@@ -220,11 +251,11 @@ handle_sni_setup() {
 
 		if ! is_valid_domain "$user_input"; then
 			echo "SNI不合法，请重新抉择"
+			echo "已设置回 $proposed_sni"
 			continue
 		fi
 
 		proposed_sni="$user_input"
-		# 完美还原：域名验证匹配，则去申请真实证书
 		if check_dns_match "$proposed_sni"; then
 			cert_type="自动"
 			color="$GREEN"
@@ -245,13 +276,19 @@ else
 	if [[ "$SNI" == "rawip" ]]; then
 		if [[ -n "$IPV4" ]] && check_ipv4_on_interface "$IPV4"; then
 			SNI="$IPV4"
-			AUTOTLS="tls { issuer acme { profile shortlived } }"
+			AUTOTLS="tls {
+    issuer acme {
+      profile shortlived
+    }
+  }"
 		else
+			echo "SNI不合理，请重新设置"
 			unset SNI
 			handle_sni_setup
 		fi
 	else
 		if ! is_valid_domain "$SNI"; then
+			echo "SNI不合理，请重新设置"
 			unset SNI
 			handle_sni_setup
 		else
@@ -264,89 +301,112 @@ else
 		fi
 	fi
 fi
+###### SNI模块结束
 
-if [[ -z "$HOST" ]]; then
-    read -rp "无法推断直连地址，请手动输入 VPS IP 或 DDNS 域名: " HOST
-    if [[ "$HOST" == *:* && "$HOST" != *\]* ]]; then HOST="[$HOST]"; fi
-fi
-
-read -rp "当前 Xray 端口为 $PORT。如果是 NAT 机器，请输入外网映射端口 (直接回车保持 $PORT): " input_port
-if [[ -n "$input_port" ]]; then
-    PORT="$input_port"
+if [[ "$WARP4" != "off" && "$WARP6" != "off" && -z "$HOST" ]]; then
+	echo "无法获取本机IP地址，请手动输入HOST用于生成节点链接"
+	read -rp "DDNS域名或者IP: " HOST
+	if [[ "$HOST" == *:* && "$HOST" != *\]* ]]; then
+		HOST="[$HOST]"
+	fi
 fi
 
 if [[ $V6ONLY -eq 1 ]]; then
 	read -rp "IPv6 only的机器，尝试使用Cloudflare WARP出口流量? (Y/n): " warp_choice
 fi
 
-OUTBOUND=$(cat <<EOF
-"outbounds": [ { "protocol": "freedom", "settings": {"domainStrategy": "UseIPv4v6"}, "tag": "direct" } ]
+OUTBOUND=$(
+	cat <<EOF
+"outbounds": [
+    {
+      "protocol": "freedom",
+      "settings": {"domainStrategy": "UseIPv4v6"},
+      "tag": "direct"
+    }
+  ]
 EOF
 )
-OUTBOUNDV6=$(cat <<EOF
-"outbounds": [ { "protocol": "freedom", "tag": "direct" } ]
+OUTBOUNDV6=$(
+	cat <<EOF
+"outbounds": [
+    {
+      "protocol": "freedom",
+      "tag": "direct"
+    }
+  ]
 EOF
 )
 
-# 完全还原你原版的 Caddy 回落及绑定逻辑
 HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
 
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="$SNI:$CADDYPORT"
-    BINDLOCAL=""
 elif [[ "$AUTOTLS" == "tls internal" ]]; then
 	CADDYPORT=444
-	BINDLOCAL="bind 127.0.0.1" 
+	BINDLOCAL="bind 127.0.0.1 [::1]"
 	DEST="127.0.0.1:$CADDYPORT"
 else
-    BINDLOCAL=""
 	DEST="127.0.0.1:$CADDYPORT"
 fi
 
-warning000="Xray Fallback: $DEST"
+warning000="Caddy listen on $DEST"
 
-# ==========================================
-# [4] Caddy 安装与网页完美伪装 (不干涉端口)
-# ==========================================
+# =========================================================================
+# 核心改造：最新版 Caddy 稳定安装、网页拉取与“现代防爆沙盒”全自动逻辑
+# =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
-    if [[ "$PKG_MGR" == "apt" ]]; then
-        # 彻底修复 Debian 13 源拉取报 NO_PUBKEY 的问题
-        rm -f /etc/apt/sources.list.d/caddy-stable.list
-        apt-get update -y || true
-        apt-get install -y curl gnupg debian-keyring debian-archive-keyring apt-transport-https
-        curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg --yes 2>/dev/null
-        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" > /etc/apt/sources.list.d/caddy-stable.list
-        apt-get update -y
-        apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
-    elif [[ "$PKG_MGR" == "apk" ]]; then
-        apk add caddy unzip libqrencode-tools xxd jq util-linux wget
-    elif [[ "$PKG_MGR" == "yum" ]]; then
-        yum install -y yum-plugin-copr && yum copr enable -y @caddy/caddy
-        yum install -y caddy unzip qrencode vim-common jq util-linux wget
+    if [[ -f /etc/caddy/Caddyfile ]]; then
+        mv /etc/caddy/Caddyfile /etc/caddy/Caddyfile.$TS.bak
+        warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
     fi
 
-    echo -e "\n正在下载伪装网页内容 (Netflix/Pantv 模板)..."
-    mkdir -p /var/www/html
-    FAKE_SITE="https://netflix.34310889.xyz"
-    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE"
-    
-    cd /var/www/html && [ ! -f index.html ] && mv $(ls *.html 2>/dev/null | head -n 1) index.html || true
-    [ ! -f index.html ] && echo "<html><body><h1>Site Under Maintenance</h1></body></html>" > index.html
-    cd - > /dev/null
-    chown -R caddy:caddy /var/www/html 2>/dev/null || true
+    echo "正在配置最新版 Caddy 官方软件源..."
+    apt-get update
+    apt-get install -y debian-keyring debian-archive-keyring apt-transport-https curl
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+    curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.list' | tee /etc/apt/sources.list.d/caddy-stable.list
 
-    # 完全原汁原味的 Caddyfile，让它自然绑定 80 端口验证证书
-    mkdir -p /etc/caddy
+    apt-get update
+    apt-get install -y caddy unzip qrencode xxd jq uuid-runtime wget
+    apt-get clean
+
+    echo "正在下载伪装网页内容..."
+    mkdir -p /var/www/html
+    FAKE_SITE="https://netflix.34310889.xyz" 
+    wget -p -k -nd -P /var/www/html -e robots=off --timeout=10 --tries=2 "$FAKE_SITE" 2>/dev/null
+    
+    cd /var/www/html
+    if [ ! -f index.html ]; then
+        first_html=$(ls *.html 2>/dev/null | head -n 1)
+        [ -n "$first_html" ] && mv "$first_html" index.html
+    fi
+    if [ ! -f index.html ]; then
+        echo "<html><head><title>Site Under Maintenance</title></head><body><h1>System Updating...</h1></body></html>" > index.html
+    fi
+    cd - > /dev/null
+    
+    chown -R root:root /var/www/html
+
+    # 【防爆核心】自动覆写 Systemd 覆盖配置：赋予 root 权限并注入 Go 1.23 抗量子免疫参数
+    mkdir -p /etc/systemd/system/caddy.service.d
+    cat > /etc/systemd/system/caddy.service.d/override.conf <<EOF
+[Service]
+User=root
+Group=root
+Environment="GODEBUG=tlsmlkem=0"
+ExecStart=
+ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile
+EOF
+
+    # 写入现代纯净版 Caddyfile
     cat >/etc/caddy/Caddyfile <<EOF
 {
     skip_install_trust
     auto_https disable_redirects
-    servers {
-        protocols h1 h2
-    }
 }
+
 https://${SNI}:${CADDYPORT} {
     ${AUTOTLS}
     ${BINDLOCAL} 
@@ -354,21 +414,11 @@ https://${SNI}:${CADDYPORT} {
     file_server
 }
 EOF
-    
-    if command -v systemctl >/dev/null; then
-        caddy fmt --overwrite /etc/caddy/Caddyfile
-        systemctl daemon-reload
-        systemctl enable caddy
-        systemctl restart caddy
-    else
-        rc-update add caddy default && rc-service caddy restart
-    fi
-    
-    # 核心护航：给 Caddy 留出通过 80 端口向 Let's Encrypt 拿证书的时间！
-    if [[ -z "$AUTOTLS" ]]; then
-        echo -e "\n等待 Caddy 通过 80 端口自动申请公网真实证书 (约 10 秒)..."
-        sleep 12
-    fi
+
+    caddy fmt --overwrite /etc/caddy/Caddyfile
+    systemctl daemon-reload
+    systemctl enable caddy
+    systemctl restart caddy
 fi
 
 if [[ $V6ONLY -eq 1 ]]; then
@@ -379,26 +429,31 @@ if [[ $V6ONLY -eq 1 ]]; then
 		OUTBOUND=$(get_warp_outbound_config)
 		if [ $? -ne 0 ]; then
 			OUTBOUND=$OUTBOUNDV6
+			warning003="WARP出口获取失败，使用纯v6出站"
 		fi
 	fi
 elif [[ "$WARP4" != "off" ]]; then
 	OUTBOUND=$OUTBOUNDV6
 fi
 
-# ==========================================
-# [5] Xray 核心部署与 SEED 派生凭证
-# ==========================================
+# 安装 Xray
 if [[ $UPDATE -eq 1 ]]; then
 	bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata $XRAYVER
 fi
 
-UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
-
+UUID=$(uuidgen)
 args=("$@")
+
 if [[ ${#args[@]} -gt 0 ]]; then
 	guests=""
 	for arg in "${args[@]}"; do
-		if [[ ${#arg} -gt 20 || "$arg" == "@lock" ]]; then continue; fi
+		if [[ ${#arg} -gt 20 ]]; then
+			echo "一些参数过长"
+			exit 1
+		fi
+		if [[ "$arg" == "@lock" ]]; then
+			continue
+		fi
 		guest_uuid=$(xray uuid -i "${arg}")
 		guests+=", { \"id\": \"${guest_uuid}\", \"email\": \"${arg}\", \"flow\": \"xtls-rprx-vision\" }"
 	done
@@ -407,21 +462,46 @@ fi
 priv_hex=$(echo -n "$SEED" | sha256sum | cut -c1-64)
 priv_b64=$(echo "$priv_hex" | xxd -r -p | base64 | tr '+/' '-_' | tr -d '=')
 tmp_key=$(/usr/local/bin/xray x25519 -i "$priv_b64" 2>&1)
+
 private_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '1p')
 public_key=$(echo "$tmp_key" | grep -oE '[A-Za-z0-9+/_-]{42,44}=*' | sed -n '2p')
 short_id=$(openssl rand -hex 4)
 
-mkdir -p /usr/local/etc/xray /var/log/xray
+if [[ -z "$private_key" || -z "$public_key" ]]; then
+    echo "错误：无法从 Xray 提取密钥，原始输出如下："
+    echo "$tmp_key"
+    exit 1
+fi
+
+if [[ -f /usr/local/etc/xray/config.json ]]; then
+	mv /usr/local/etc/xray/config.json /usr/local/etc/xray/config.json.$TS.bak
+	warning002="Backup of previous config.json created at /usr/local/etc/xray/config.json.$TS.bak"
+fi
 
 cat >/usr/local/etc/xray/config.json <<-EOF
 	{
-	  "log": { "access": "none", "error": "/var/log/xray/error.log", "loglevel": "warning" },
+	  "log": {
+	    "access": "none",
+	    "error": "/var/log/xray/error.log",
+	    "loglevel": "warning"
+	  },
 	  "stats": {},
 	  "policy": {
-	    "levels": { "0": { "statsUserUplink": true, "statsUserDownlink": true } },
-	    "system": { "statsInboundUplink": true, "statsInboundDownlink": true }
+	    "levels": {
+	      "0": {
+	        "statsUserUplink": true,
+	        "statsUserDownlink": true
+	      }
+	    },
+	    "system": {
+	      "statsInboundUplink": true,
+	      "statsInboundDownlink": true
+	    }
 	  },
-	  "api": { "tag": "api", "services": ["StatsService"] },
+	  "api": {
+	    "tag": "api",
+	    "services": ["StatsService"]
+	  },
 	  "inbounds": [
 	    {
 	      "listen": "0.0.0.0",
@@ -440,7 +520,7 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	          "show": false,
 	          "dest": "${DEST}",
 	          "xver": 0,
-	          "serverNames": ["${SNI}"], 
+	          "serverNames": ["","${SNI}"],
 	          "privateKey": "${private_key}",
 	          "shortIds": ["${short_id}"]
 	        }
@@ -450,65 +530,64 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	      "listen": "127.0.0.1",
 	      "port": 10085,
 	      "protocol": "dokodemo-door",
-	      "settings": { "address": "127.0.0.1" },
+	      "settings": {
+	        "address": "127.0.0.1"
+	      },
 	      "tag": "api-in"
 	    }
 	  ],
 	  ${OUTBOUND},
 	  "routing": {
 	    "domainStrategy": "AsIs",
-	    "rules": [ { "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" } ]
+	    "rules": [
+	      { "type": "field", "inboundTag": ["api-in"], "outboundTag": "api" }
+	    ]
 	  }
 	}
 EOF
 
-# ==========================================
-# [6] 注入 Go 1.24+ 免疫与 Xray 启动
-# ==========================================
-if command -v systemctl >/dev/null; then
-    mkdir -p /etc/systemd/system/xray.service.d
-    cat > /etc/systemd/system/xray.service.d/override.conf <<EOF
-[Service]
-User=root
-Group=root
-Environment="GODEBUG=tlsmlkem=0"
-EOF
-    systemctl daemon-reload
-    systemctl enable xray && systemctl restart xray || {
-        echo -e "\n如果此处仍然报错，说明 80 端口可能被封死，Caddy 未能拿到证书。"
-    }
-else
-    sed -i '/start_pre()/a \    export GODEBUG="tlsmlkem=0"' /etc/init.d/xray 2>/dev/null || true
-    rc-update add xray default && rc-service xray restart
-fi
+systemctl enable xray
+systemctl restart xray
 
-if [[ $UPDATE -eq 1 && -f /etc/sysctl.conf ]] && command -v sysctl >/dev/null; then
-    sed -i '/^### proxy optimization start ###$/,/^### proxy optimization end ###$/d' /etc/sysctl.conf
-    cat <<'EOF' >> /etc/sysctl.conf
+if [[ $UPDATE -eq 1 ]]; then
+touch /etc/sysctl.conf
+sed -i '/^### proxy optimization start ###$/,/^### proxy optimization end ###$/d' /etc/sysctl.conf
+tee -a /etc/sysctl.conf >/dev/null <<'EOF'
+
 ### proxy optimization start ###
+kernel.panic = 1
+vm.panic_on_oom = 1
 net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = cake
+net.core.netdev_max_backlog = 8192
+net.core.rmem_default = 262144
+net.core.wmem_default = 262144
 net.ipv4.tcp_rmem = 8192 262144 33554432
 net.ipv4.tcp_wmem = 4096 16384 33554432
+net.core.rmem_max = 33554432
+net.core.wmem_max = 33554432
+net.ipv4.tcp_window_scaling = 1
+net.ipv4.tcp_slow_start_after_idle = 0
+net.ipv4.tcp_fastopen = 3
+net.ipv4.conf.all.rp_filter = 1
+net.ipv4.conf.default.rp_filter = 1
 ### proxy optimization end ###
 EOF
-    sysctl -p 2>/dev/null || true
+sysctl -p
 fi
+
+systemctl status xray --no-pager -l
+systemctl status caddy --no-pager -l
 
 sed -i '/^# ==== GitHub IPv6 fallback ====$/,/^# ==== End GitHub IPv6 fallback ====$/d' /etc/hosts
 
-# ==========================================
-# [7] 生成节点链接并输出结果
-# ==========================================
-json=$(curl -s -L --retry 1 https://ipapi.co/json/ || echo "{}")
+json=$(curl -s -L --retry 1 https://ipapi.co/json/)
 CITY=$(echo "$json" | grep -oP '"city"\s*:\s*"\K[^"]+' | sed 's/[^a-zA-Z0-9]//g')
 ASN=$(echo "$json" | grep -oP '"asn"\s*:\s*"AS\K\d+')
-COUNTRYCODE=$(curl -4 -s https://dash.cloudflare.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
-NODE_NAME="${COUNTRYCODE}-${CITY}AS${ASN}"
-[ "$NODE_NAME" == "-AS" ] && NODE_NAME="Xray-Reality"
+COUNTRYCODE=$(echo "$TRACE" | grep '^loc=' | cut -d= -f2)
 
 insert="SEED=$SEED"
-if [[ "$AUTOTLS" == *"tls internal"* ]]; then
+if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	insert+=" SNI=rawip"
 else
 	insert+=" SNI=$SNI"
@@ -516,12 +595,16 @@ fi
 [[ $PORT -ne 443 ]] && insert+=" PORT=$PORT"
 
 if [[ -z "$HOST" ]]; then
-	if [[ "$WARP4" != "off" ]]; then HOST="[$IPV6]"; else HOST=$IPV4; fi
+	if [[ "$WARP4" != "off" ]]; then
+		HOST="[$IPV6]"
+	else
+		HOST=$IPV4
+	fi
 else
 	insert+=" HOST=$HOST"
 fi
 
-vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${NODE_NAME}"
+vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
 echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
@@ -532,18 +615,42 @@ echo "以上节点信息保存在 ~/_xray_url_ 文件中, 以后使用 cat _xray
 if [[ -n "$guests" ]]; then
 	echo "" >>~/_xray_url_
 	echo "Guest 用户信息 ----------" >>~/_xray_url_
+	echo "空间有限不生成二维码，可用前端工具自行生成 https://emn178.github.io/online-tools/qr-code/generator/ " >>~/_xray_url_
 	for arg in "${args[@]}"; do
-		if [[ "$arg" == "@lock" ]]; then continue; fi
+		if [[ "$arg" == "@lock" ]]; then
+			continue
+		fi
 		guest_uuid=$(xray uuid -i "${arg}")
-		echo "vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${NODE_NAME}-${arg}" >>~/_xray_url_
+		guest_url="vless://${guest_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=firefox&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+		echo "${guest_url}" >>~/_xray_url_
 	done
+	echo "查询自重启至今的统计流量：（字节）" >>~/_xray_url_
+	echo "xray api statsquery --server=127.0.0.1:10085" >>~/_xray_url_
 fi
 
 echo "" >>~/_xray_url_
-echo "妥善保存备用重装命令，可无损恢复相同公私钥：" >>~/_xray_url_
+echo "妥善保存 备用信息 $(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M %Z") ${COUNTRYCODE}-${CITY}${ASN}" >>~/_xray_url_
+echo "重装命令：" >>~/_xray_url_
 echo -n "$insert bash <(curl -fsSL ${BASEURL}reality-lite.sh) " >>~/_xray_url_
-if [[ ${#args[@]} -gt 0 ]]; then echo -n "${args[*]}" >>~/_xray_url_ ; fi
-echo -e "\n------------------------------------" >>~/_xray_url_
+if [[ ${#args[@]} -gt 0 ]]; then
+	echo -n "${args[*]}" >>~/_xray_url_
+fi
+echo "" >>~/_xray_url_
+echo "------------------------------------" >>~/_xray_url_
 echo $warning000 >>~/_xray_url_
-
+echo $warning001 >>~/_xray_url_
+echo $warning002 >>~/_xray_url_
+echo $warning003 >>~/_xray_url_
 cat ~/_xray_url_
+
+if [[ $UPDATE -eq 0 ]]; then
+	echo ""
+	echo "===== 由于 @lock 标签，没有更新主程序 ======"
+fi
+
+if [[ "$WARP4" != "off" && "$WARP6" != "off" ]]; then
+	echo "VPS IP:  $HOST"
+else
+	echo "VPS IPv4:    $IPV4"
+	echo "VPS IPv6:    [$IPV6]"
+fi

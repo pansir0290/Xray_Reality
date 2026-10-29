@@ -386,7 +386,7 @@ fi
 warning000="Caddy listen on $DEST"
 
 # =========================================================================
-# 安装基础组件和caddy (修复版本：加入 admin off、清理僵尸进程、沙盒路径)
+# 现代 Caddy 防爆与提权部署模块
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ -f /etc/caddy/Caddyfile ]]; then
@@ -394,7 +394,7 @@ if [[ $UPDATE -eq 1 ]]; then
         warning001="Backup of previous Caddyfile created at /etc/caddy/Caddyfile.$TS.bak"
     fi
     
-    # 强制停止可能存在的残留崩溃进程，释放 2019 端口
+    # 强制停止可能存在的残留崩溃进程，释放端口
     systemctl stop caddy 2>/dev/null
     killall -9 caddy 2>/dev/null
 
@@ -421,23 +421,23 @@ if [[ $UPDATE -eq 1 ]]; then
     fi
     cd - > /dev/null
     
-    # 统一权限，确保 caddy 用户有权读写证书和网页
-    chown -R caddy:caddy /var/www/html /var/lib/caddy /var/log/caddy
+    # 将所有权统一归属 root，避免后续权限错乱
+    chown -R root:root /var/www/html /var/lib/caddy /var/log/caddy
     # === 抓取结束 ===
 
-    # 注入 Systemd 防爆覆盖（指定 HOME 路径、抗量子免疫）
+    # 提权 Systemd 防爆覆盖（指定 root 权限击穿 80 端口限制、加入抗量子免疫）
     mkdir -p /etc/systemd/system/caddy.service.d
     cat > /etc/systemd/system/caddy.service.d/override.conf <<EOF
 [Service]
-User=caddy
-Group=caddy
+User=root
+Group=root
 Environment="GODEBUG=tlsmlkem=0"
 Environment="HOME=/var/lib/caddy"
 ExecStart=
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EOF
 
-    # 写入 Caddyfile（加入 admin off 彻底解决 2019 端口冲突，锁定 h1/h2 规避高位 UDP）
+    # 写入 Caddyfile（加入 admin off 彻底解决 2019 端口冲突，锁定 h1/h2 规避高位 QUIC/UDP）
     cat >/etc/caddy/Caddyfile <<EOF
 {
     admin off
@@ -479,9 +479,15 @@ elif [[ "$WARP4" != "off" ]]; then
 	OUTBOUND=$OUTBOUNDV6
 fi
 
-# Install Xray
+# =========================================================================
+# Xray 核心安装与提权修复
+# =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
 	bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install --without-geodata $XRAYVER
+    
+    # 强制修正 Xray 日志与配置的归属权，彻底解决 status=23 permission denied 报错
+    mkdir -p /var/log/xray /usr/local/etc/xray
+    chown -R xray:xray /var/log/xray /usr/local/etc/xray
 fi
 
 UUID=$(uuidgen)
@@ -613,6 +619,9 @@ cat >/usr/local/etc/xray/config.json <<-EOF
 	  }
 	}
 EOF
+
+# 确保在配置文件更新后，将所有权赋给 xray 用户，防止重启时读取失败
+chown -R xray:xray /usr/local/etc/xray
 
 systemctl enable xray
 systemctl restart xray

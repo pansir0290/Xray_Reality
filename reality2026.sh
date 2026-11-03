@@ -374,6 +374,7 @@ ExecStart=
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EOF
 
+    # 动态写入 TLS 配置，若域名正确解析则使用空值(自动申请真实证书)，否则回落为 tls internal
     cat >/etc/caddy/Caddyfile <<EOF
 {
     admin off
@@ -385,7 +386,7 @@ EOF
 }
 
 https://${SNI:-127.0.0.1}:${CADDYPORT} {
-    tls internal
+    ${AUTOTLS}
     root * /var/www/html
     file_server
 }
@@ -419,6 +420,8 @@ if [[ $UPDATE -eq 1 ]]; then
     bash <(curl -fsSL https://sing-box.app/deb-install.sh)
     rm -rf /var/log/sing-box
     mkdir -p /var/log/sing-box /etc/sing-box
+    # 强制将日志目录所有权下放给 sing-box，解决服务无权写入导致的致命闪退
+    chown -R sing-box:sing-box /var/log/sing-box
 fi
 
 UUID=$(uuidgen)
@@ -452,7 +455,7 @@ if [[ -f /etc/sing-box/config.json ]]; then
 fi
 
 # =========================================================================
-# 写入纯正 sing-box 官方规范 config.json (全面清理 Xray 遗留字段)
+# 写入纯正 sing-box 官方规范 config.json (使用 handshake 处理回落)
 # =========================================================================
 cat >/etc/sing-box/config.json <<EOF
 {

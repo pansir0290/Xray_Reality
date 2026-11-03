@@ -17,7 +17,20 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 SEED=${SEED:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)}
-PORT=${PORT:-"443"}
+
+# =========================================================================
+# 新增：交互式或环境变量指定监听端口（彻底排除 443 占用或阻断的锅）
+# =========================================================================
+if [[ -z "$PORT" ]]; then
+    read -rp "请输入服务监听端口 (默认 443，直接回车使用 443): " input_port
+    if [[ -n "$input_port" ]]; then
+        PORT="$input_port"
+    else
+        PORT="443"
+    fi
+fi
+echo "当前选定的服务监听端口为: $PORT"
+
 UPDATE=1
 V6ONLY=0
 
@@ -324,7 +337,7 @@ fi
 warning000="Caddy listen on $DEST"
 
 # =========================================================================
-# Caddy 安装与 Root 提权防爆部署（完全继承你原来的网页伪装与防爆逻辑）
+# Caddy 安装与 Root 提权防爆部署
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ -f /etc/caddy/Caddyfile ]]; then
@@ -421,7 +434,6 @@ fi
 UUID=$(uuidgen)
 args=("$@")
 
-# 完美复刻多用户 Guest 派生逻辑
 guests=""
 guest_users_json=""
 if [[ ${#args[@]} -gt 0 ]]; then
@@ -498,7 +510,7 @@ systemctl enable sing-box
 systemctl restart sing-box
 
 # =========================================================================
-# BBR / CAKE 内核网络优化（原汁原味保留）
+# BBR / CAKE 内核网络优化
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
 touch /etc/sysctl.conf

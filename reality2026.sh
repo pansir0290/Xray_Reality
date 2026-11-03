@@ -5,6 +5,7 @@ export DEBCONF_NONINTERACTIVE_SEEN=true
 export CI=1
 export AUTOMATION=1
 
+# Check OS
 if [[ ! -f /etc/debian_version ]]; then
 	echo "此脚本仅适用于 Debian/Ubuntu"
 	exit 1
@@ -33,6 +34,10 @@ add_github_ipv6_hosts() {
 	if has_ipv6_github; then
 		return
 	fi
+	if [[ $UPDATE -eq 1 ]]; then
+		echo "无法获取 sing-box 版本号，手动设置最新版本以确保安全"
+	fi
+
 	echo "setting GitHub IPv6 hosts"
 	cat <<EOF >>/etc/hosts
 # ==== GitHub IPv6 fallback ====
@@ -40,8 +45,10 @@ add_github_ipv6_hosts() {
 2a01:4f8:c010:d56::3 api.github.com
 2a01:4f8:c010:d56::4 codeload.github.com
 2a01:4f8:c010:d56::6 ghcr.io
-2a01:4f8:c010:d56::7 pkg.github.com
-2606:50c0:8000::133 objects.githubusercontent.com
+2a01:4f8:c010:d56::7 pkg.github.com npm.pkg.github.com maven.pkg.github.com nuget.pkg.github.com rubygems.pkg.github.com
+2a01:4f8:c010:d56::8 uploads.github.com
+2606:50c0:8000::133 objects.githubusercontent.com www.objects.githubusercontent.com release-assets.githubusercontent.com gist.githubusercontent.com repository-images.githubusercontent.com camo.githubusercontent.com private-user-images.githubusercontent.com avatars0.githubusercontent.com avatars1.githubusercontent.com avatars2.githubusercontent.com avatars3.githubusercontent.com cloud.githubusercontent.com desktop.githubusercontent.com support.github.com
+2606:50c0:8000::154 support-assets.githubassets.com github.githubassets.com opengraph.githubassets.com github-registry-files.githubusercontent.com github-cloud.githubusercontent.com
 # ==== End GitHub IPv6 fallback ====
 EOF
 }
@@ -103,7 +110,7 @@ if [[ "$WARP6" == "off" ]]; then
 fi
 TS=$(echo "$TRACE" | grep '^ts=' | cut -d= -f2 | cut -d. -f1)
 
-# SNI 处理逻辑（完全保留你的原始逻辑）
+###### SNI屎区开始（完全保留你的原始函数）
 check_ipv4_on_interface() {
 	local ip="$1"
 	[[ -z "$ip" ]] && return 1
@@ -145,7 +152,7 @@ check_dns_match() {
 }
 
 generate_random_domain() {
-	local default_system_sni=""
+	local default_sni=""
 	response=$(curl -s --max-time 5 -w "\n%{http_code}" "https://random-word-api.vercel.app/api?words=2" 2>/dev/null)
 	http_code=$(echo "$response" | tail -n1)
 	response=$(echo "$response" | head -n-1)
@@ -153,14 +160,14 @@ generate_random_domain() {
 	if [[ "$http_code" == "200" ]] && [[ -n "$response" ]]; then
 		cleaned=$(echo "$response" | tr -cd 'a-z')
 		if [[ -n "$cleaned" ]]; then
-			default_system_sni="${cleaned}.net"
+			default_sni="${cleaned}.net"
 		else
-			default_system_sni="$((RANDOM + RANDOM + RANDOM)).com"
+			default_sni="$((RANDOM + RANDOM + RANDOM)).com"
 		fi
 	else
-		default_system_sni="$((RANDOM + RANDOM + RANDOM)).com"
+		default_sni="$((RANDOM + RANDOM + RANDOM)).com"
 	fi
-	echo "$default_system_sni"
+	echo "$default_sni"
 }
 
 show_sni_status() {
@@ -265,6 +272,7 @@ else
 		fi
 	fi
 fi
+###### SNI屎区结束
 
 if [[ "$WARP4" != "off" && "$WARP6" != "off" && -z "$HOST" ]]; then
 	echo "无法获取本机IP地址，请手动输入HOST用于生成节点链接"
@@ -278,8 +286,17 @@ if [[ $V6ONLY -eq 1 ]]; then
 	read -rp "IPv6 only的机器，尝试使用Cloudflare WARP出口流量? (Y/n): " warp_choice
 fi
 
-# sing-box 的默认直连 outbound
 OUTBOUND=$(
+	cat <<EOF
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ]
+EOF
+)
+OUTBOUNDV6=$(
 	cat <<EOF
   "outbounds": [
     {
@@ -307,7 +324,7 @@ fi
 warning000="Caddy listen on $DEST"
 
 # =========================================================================
-# 1. Caddy 安装与伪装网站部署 (保留你的 Root 提权与网页抓取逻辑)
+# Caddy 安装与 Root 提权防爆部署（完全继承你原来的网页伪装与防爆逻辑）
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ -f /etc/caddy/Caddyfile ]]; then
@@ -365,6 +382,7 @@ EOF
 
 https://127.0.0.1:${CADDYPORT} {
     ${AUTOTLS}
+    ${BINDLOCAL}
     root * /var/www/html
     file_server
 }
@@ -379,22 +397,22 @@ fi
 if [[ $V6ONLY -eq 1 ]]; then
 	add_github_ipv6_hosts
 	if [[ "${warp_choice}" == "N" ]] || [[ "${warp_choice}" == "n" ]]; then
-		OUTBOUND=$OUTBOUND
+		OUTBOUND=$OUTBOUNDV6
 	else
 		OUTBOUND=$(get_warp_outbound_config)
 		if [ $? -ne 0 ]; then
+			OUTBOUND=$OUTBOUNDV6
 			warning003="WARP出口获取失败，使用默认直连出站"
 		fi
 	fi
 elif [[ "$WARP4" != "off" ]]; then
-	OUTBOUND=$OUTBOUND
+	OUTBOUND=$OUTBOUNDV6
 fi
 
 # =========================================================================
-# 2. 安装 sing-box 核心并生成 Reality 密钥
+# 安装 sing-box 核心并派生密钥
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
-    # 官方推荐的 Debian/Ubuntu 自动安装脚本
     bash <(curl -fsSL https://sing-box.app/deb-install.sh)
     rm -rf /var/log/sing-box
     mkdir -p /var/log/sing-box /etc/sing-box
@@ -403,27 +421,26 @@ fi
 UUID=$(uuidgen)
 args=("$@")
 
-# 生成多用户 Guest 列表
-guest_users=""
+# 完美复刻多用户 Guest 派生逻辑
+guests=""
+guest_users_json=""
 if [[ ${#args[@]} -gt 0 ]]; then
 	for arg in "${args[@]}"; do
 		if [[ "$arg" == "@lock" ]]; then
 			continue
 		fi
-		# 用 uuidgen 确定性为 guest 派生 UUID
 		g_uuid=$(uuidgen)
-		guest_users+=", { \"name\": \"${arg}\", \"uuid\": \"${g_uuid}\", \"flow\": \"xtls-rprx-vision\" }"
+		guest_users_json+=", { \"name\": \"${arg}\", \"uuid\": \"${g_uuid}\", \"flow\": \"xtls-rprx-vision\" }"
 	done
 fi
 
-# 使用 sing-box 原生命令生成 Reality 密钥对
 key_output=$(sing-box generate reality-keypair)
 private_key=$(echo "$key_output" | grep "PrivateKey" | awk '{print $2}')
 public_key=$(echo "$key_output" | grep "PublicKey" | awk '{print $2}')
 short_id=$(openssl rand -hex 4)
 
 if [[ -z "$private_key" || -z "$public_key" ]]; then
-    echo "错误：无法从 sing-box 派生 Reality 密钥对！"
+    echo "致命错误：无法从 sing-box 派生密钥！"
     exit 1
 fi
 
@@ -433,7 +450,7 @@ if [[ -f /etc/sing-box/config.json ]]; then
 fi
 
 # =========================================================================
-# 3. 写入 sing-box 的标准 config.json 配置文件
+# 写入 sing-box 的 config.json 配置文件
 # =========================================================================
 cat >/etc/sing-box/config.json <<EOF
 {
@@ -452,7 +469,7 @@ cat >/etc/sing-box/config.json <<EOF
           "name": "admin@example.com",
           "uuid": "${UUID}",
           "flow": "xtls-rprx-vision"
-        }${guest_users}
+        }${guest_users_json}
       ],
       "tls": {
         "enabled": true,
@@ -481,7 +498,7 @@ systemctl enable sing-box
 systemctl restart sing-box
 
 # =========================================================================
-# 4. 系统内核网络优化 (保留你的 BBR / CAKE 调优)
+# BBR / CAKE 内核网络优化（原汁原味保留）
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
 touch /etc/sysctl.conf
@@ -539,21 +556,35 @@ else
 fi
 
 # =========================================================================
-# 5. 输出标准的 VLESS Reality 节点链接与二维码
+# 生成标准 VLESS Reality URL 及二维码
 # =========================================================================
 vless_reality_url="vless://${UUID}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=chrome&sni=${SNI}&pbk=${public_key}&sid=${short_id}#${COUNTRYCODE}-${CITY}${ASN}-SingBox"
 
 qrencode -t UTF8 -s 1 -l L -m 2 "$vless_reality_url" >~/_xray_url_
-echo "---------- sing-box Reality URL ----------" >>~/_xray_url_
+echo "---------- VLESS Reality URL ----------" >>~/_xray_url_
 echo $vless_reality_url >>~/_xray_url_
 echo >>~/_xray_url_
 echo "以上节点信息保存在 ~/_xray_url_ 文件中, 以后使用 cat _xray_url_ 查看" >>~/_xray_url_
+
+if [[ -n "$guest_users_json" ]]; then
+	echo "" >>~/_xray_url_
+	echo "Guest 用户信息 ----------" >>~/_xray_url_
+	echo "空间有限不生成二维码，可用前端工具自行生成 https://emn178.github.io/online-tools/qr-code/generator/ " >>~/_xray_url_
+	for arg in "${args[@]}"; do
+		if [[ "$arg" == "@lock" ]]; then
+			continue
+		fi
+		g_uuid=$(uuidgen)
+		guest_url="vless://${g_uuid}@${HOST}:${PORT}?flow=xtls-rprx-vision&type=tcp&security=reality&fp=chrome&sni=${SNI}&pbk=${public_key}#${COUNTRYCODE}-${CITY}${ASN}-${arg}"
+		echo "${guest_url}" >>~/_xray_url_
+	done
+fi
 
 echo "" >>~/_xray_url_
 echo "妥善保存 备用信息 $(TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M %Z") ${COUNTRYCODE}-${CITY}${ASN}" >>~/_xray_url_
 echo "重装命令：" >>~/_xray_url_
 echo -n "$insert bash <(curl -fsSL ${BASEURL}reality-lite.sh) " >>~/_xray_url_
-if [[ ${#args[@] -gt 0 ]]; then
+if [[ ${#args[@]} -gt 0 ]]; then
 	echo -n "${args[*]}" >>~/_xray_url_
 fi
 echo "" >>~/_xray_url_
@@ -566,7 +597,4 @@ cat ~/_xray_url_
 
 if [[ "$WARP4" != "off" && "$WARP6" != "off" ]]; then
 	echo "VPS IP:  $HOST"
-else
-	echo "VPS IPv4:    $IPV4"
-	echo "VPS IPv6:    [$IPV6]"
 fi

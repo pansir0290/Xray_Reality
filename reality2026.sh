@@ -452,7 +452,7 @@ if [[ -f /etc/sing-box/config.json ]]; then
 fi
 
 # =========================================================================
-# 写入纯正 sing-box 官方规范 config.json (fallback 已正确嵌套进 reality 内部)
+# 写入纯正 sing-box 官方规范 config.json (fallback 嵌套在 reality 内)
 # =========================================================================
 cat >/etc/sing-box/config.json <<EOF
 {

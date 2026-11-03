@@ -19,7 +19,7 @@ fi
 SEED=${SEED:-$(tr -dc 'A-Za-z0-9' </dev/urandom | head -c 20)}
 
 # =========================================================================
-# 新增：交互式或环境变量指定监听端口（彻底排除 443 占用或阻断的锅）
+# 交互式或环境变量指定监听端口
 # =========================================================================
 if [[ -z "$PORT" ]]; then
     read -rp "请输入服务监听端口 (默认 443，直接回车使用 443): " input_port
@@ -123,7 +123,7 @@ if [[ "$WARP6" == "off" ]]; then
 fi
 TS=$(echo "$TRACE" | grep '^ts=' | cut -d= -f2 | cut -d. -f1)
 
-###### SNI屎区开始（完全保留你的原始函数）
+###### SNI屎区开始
 check_ipv4_on_interface() {
 	local ip="$1"
 	[[ -z "$ip" ]] && return 1
@@ -327,8 +327,7 @@ CADDYPORT=$(((tmpport % 30000) + 10000))
 if [[ "$AUTOTLS" == *"shortlived"* ]]; then
 	DEST="127.0.0.1:$CADDYPORT"
 elif [[ "$AUTOTLS" == "tls internal" ]]; then
-	CADDYPORT=444
-	BINDLOCAL="bind 127.0.0.1 [::1]"
+	CADDYPORT=$CADDYPORT
 	DEST="127.0.0.1:$CADDYPORT"
 else
 	DEST="127.0.0.1:$CADDYPORT"
@@ -337,7 +336,7 @@ fi
 warning000="Caddy listen on $DEST"
 
 # =========================================================================
-# Caddy 安装与 Root 提权防爆部署
+# Caddy 安装与安全配置
 # =========================================================================
 if [[ $UPDATE -eq 1 ]]; then
     if [[ -f /etc/caddy/Caddyfile ]]; then
@@ -383,6 +382,7 @@ ExecStart=
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EOF
 
+    # 关键修复：Caddyfile 必须绑定监听具体的 SNI/域名加动态端口，并开启 tls internal
     cat >/etc/caddy/Caddyfile <<EOF
 {
     admin off
@@ -393,9 +393,8 @@ EOF
     }
 }
 
-https://127.0.0.1:${CADDYPORT} {
-    ${AUTOTLS}
-    ${BINDLOCAL}
+https://${SNI:-127.0.0.1}:${CADDYPORT} {
+    tls internal
     root * /var/www/html
     file_server
 }
@@ -462,7 +461,7 @@ if [[ -f /etc/sing-box/config.json ]]; then
 fi
 
 # =========================================================================
-# 写入 sing-box 的 config.json 配置文件
+# 写入纯正 sing-box 官方规范的 config.json (已剔除所有 xray 历史冗余字段)
 # =========================================================================
 cat >/etc/sing-box/config.json <<EOF
 {
@@ -488,7 +487,6 @@ cat >/etc/sing-box/config.json <<EOF
         "server_name": "${SNI}",
         "reality": {
           "enabled": true,
-          "net": "tcp",
           "private_key": "${private_key}",
           "short_id": ["${short_id}"]
         },

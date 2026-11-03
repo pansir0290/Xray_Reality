@@ -452,7 +452,7 @@ if [[ -f /etc/sing-box/config.json ]]; then
 fi
 
 # =========================================================================
-# 写入纯正 sing-box 官方规范 config.json (fallback 嵌套在 reality 内)
+# 写入纯正 sing-box 官方规范 config.json (全面清理 Xray 遗留字段)
 # =========================================================================
 cat >/etc/sing-box/config.json <<EOF
 {
@@ -480,7 +480,7 @@ cat >/etc/sing-box/config.json <<EOF
           "enabled": true,
           "private_key": "${private_key}",
           "short_id": ["${short_id}"],
-          "fallback": {
+          "handshake": {
             "server": "127.0.0.1",
             "server_port": ${CADDYPORT}
           }
@@ -488,10 +488,7 @@ cat >/etc/sing-box/config.json <<EOF
       }
     }
   ],
-  ${OUTBOUND},
-  "routing": {
-    "domain_strategy": "as_is"
-  }
+  ${OUTBOUND}
 }
 EOF
 

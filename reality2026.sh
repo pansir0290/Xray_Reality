@@ -123,7 +123,7 @@ if [[ "$WARP6" == "off" ]]; then
 fi
 TS=$(echo "$TRACE" | grep '^ts=' | cut -d= -f2 | cut -d. -f1)
 
-###### SNI屎区开始
+###### SNI逻辑开始
 check_ipv4_on_interface() {
 	local ip="$1"
 	[[ -z "$ip" ]] && return 1
@@ -285,7 +285,7 @@ else
 		fi
 	fi
 fi
-###### SNI屎区结束
+###### SNI逻辑结束
 
 if [[ "$WARP4" != "off" && "$WARP6" != "off" && -z "$HOST" ]]; then
 	echo "无法获取本机IP地址，请手动输入HOST用于生成节点链接"
@@ -323,15 +323,7 @@ EOF
 HEX_PART=$(echo -n "$SEED" | md5sum | cut -c1-6)
 tmpport=$((16#$HEX_PART))
 CADDYPORT=$(((tmpport % 30000) + 10000))
-
-if [[ "$AUTOTLS" == *"shortlived"* ]]; then
-	DEST="127.0.0.1:$CADDYPORT"
-elif [[ "$AUTOTLS" == "tls internal" ]]; then
-	CADDYPORT=$CADDYPORT
-	DEST="127.0.0.1:$CADDYPORT"
-else
-	DEST="127.0.0.1:$CADDYPORT"
-fi
+DEST="127.0.0.1:$CADDYPORT"
 
 warning000="Caddy listen on $DEST"
 
@@ -382,7 +374,6 @@ ExecStart=
 ExecStart=/usr/bin/caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
 EOF
 
-    # 关键修复：Caddyfile 必须绑定监听具体的 SNI/域名加动态端口，并开启 tls internal
     cat >/etc/caddy/Caddyfile <<EOF
 {
     admin off
@@ -461,7 +452,7 @@ if [[ -f /etc/sing-box/config.json ]]; then
 fi
 
 # =========================================================================
-# 写入纯正 sing-box 官方规范的 config.json (已剔除所有 xray 历史冗余字段)
+# 写入纯正 sing-box 官方规范 config.json (fallback 已正确嵌套进 reality 内部)
 # =========================================================================
 cat >/etc/sing-box/config.json <<EOF
 {
@@ -488,11 +479,11 @@ cat >/etc/sing-box/config.json <<EOF
         "reality": {
           "enabled": true,
           "private_key": "${private_key}",
-          "short_id": ["${short_id}"]
-        },
-        "fallback": {
-          "server": "127.0.0.1",
-          "server_port": ${CADDYPORT}
+          "short_id": ["${short_id}"],
+          "fallback": {
+            "server": "127.0.0.1",
+            "server_port": ${CADDYPORT}
+          }
         }
       }
     }
